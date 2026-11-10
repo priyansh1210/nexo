@@ -1,0 +1,10 @@
+create extension if not exists vector;
+create schema if not exists raw;
+create schema if not exists staging;
+create schema if not exists marts;
+create schema if not exists snapshots;
+create schema if not exists meta;
+create schema if not exists app;
+create schema if not exists audit;
+create schema if not exists vec;
+create schema if not exists agent;

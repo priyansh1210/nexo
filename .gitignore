@@ -1,0 +1,18 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+.next/
+.dagster_home/
+
+# Local machine storage kept inside the project folder (never commit)
+DockerDesktopWSL/
+.tools/
+.uv-cache/
+
+# Generated synthetic data
+data/synthetic/out/
+uv.toml

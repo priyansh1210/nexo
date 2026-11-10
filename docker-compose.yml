@@ -1,0 +1,74 @@
+# Demo stack. Credentials here are local-only defaults; Postgres is not published to the host.
+x-py: &py
+  image: nexo-py
+  environment:
+    DATABASE_URL: postgresql://nexo:nexo@postgres:5432/nexo
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: nexo
+      POSTGRES_PASSWORD: nexo
+      POSTGRES_DB: nexo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexo -d nexo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    <<: *py
+    build: .
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mock-sources:
+    <<: *py
+    pull_policy: never # built by api
+    command: uvicorn services.mock_sources.main:app --host 0.0.0.0 --port 8001
+    ports: ["8001:8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  dagster:
+    <<: *py
+    pull_policy: never # built by api
+    command: dagster dev -h 0.0.0.0 -p 3001 -m data.pipelines.definitions
+    ports: ["3001:3001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:3001/server_info')"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+
+  web:
+    build: apps/web
+    environment:
+      API_URL: http://api:8000
+    ports: ["3000:3000"]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
