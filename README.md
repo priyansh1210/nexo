@@ -3,8 +3,8 @@
 A self-hostable customer-success assistant: ask a business question, get an investigated answer with
 evidence and data freshness, then approve the follow-up actions, all in one conversation.
 
-Status: Phase 1 (synthetic data). The five services boot and the seeded demo data exists; features
-arrive phase by phase.
+Status: Phase 2 (data layer). The stack boots, loads the seeded demo data and builds a tested
+warehouse from it; the API, agent and UI arrive in the next phases.
 
 ## Quickstart
 
@@ -26,7 +26,7 @@ Stop with `docker compose down` (add `-v` to drop the database volume).
 ## Development
 
 ```bash
-uv sync && uv run pytest -q && uv run ruff check .   # Python
+uv sync && uv run pytest -q && uv run ruff check .   # Python; the pipeline tests need Docker running
 cd apps/web && pnpm install && pnpm lint && pnpm build   # Web
 ```
 
@@ -41,12 +41,40 @@ Writes accounts, contacts, invoices, tickets, documents and about 100,000 produc
 carries the demo story: six accounts renew next month, three are at risk, and Acme Corp's usage fell
 40% after an import problem its admin reported in a ticket that is still open.
 
+## Data pipeline
+
+Every hour (and once at startup) the pipeline lands new records in the append-only `raw` schema,
+then dbt builds and tests the warehouse. The models the assistant reads are in `marts`.
+
+| Command | What it does |
+| --- | --- |
+| `make sync` | Run the pipeline now |
+| `make replay` | Rebuild the whole warehouse from `raw` |
+| `make replay FROM=2026-10-01 TO=2026-10-07` | Recompute usage for a range of days |
+| `make stall SOURCE=product_events` | Make a source look as if it stopped two days ago |
+| `make resume SOURCE=product_events` | Undo a stall |
+| `make reset` | Drop the database and demo data; the next `make demo` regenerates them |
+
+Without `make`, run the same thing directly, for example
+`docker compose exec dagster python -m data.pipelines.cli stall product_events`.
+
+- **Freshness** is in `meta.source_freshness`: each source's last successful sync and whether it is
+  `fresh` or `stale` (older than twice its expected interval).
+- **Check results** from the latest build are in `meta.check_results`, one row per test.
+- **Duplicates and late events** are handled in one place: an event id is staged once, and a run
+  recomputes exactly the days that received new events.
+- **Records that match no account** are listed in `marts.identity_unmatched`, never dropped.
+- The demo data is anchored to the day it was generated. After a few days, `make reset` and
+  `make demo` give a fresh set.
+
 ## Layout
 
 ```text
 apps/api            FastAPI service (the agent will live here)
 apps/web            Next.js app
-data/pipelines      Dagster definitions (dbt project arrives in Phase 2)
+data/connectors.py  the connector interface and the three connectors
+data/pipelines      sync runner, pipeline commands, Dagster job
+data/dbt            warehouse models, tests and the accounts history snapshot
 data/synthetic      seeded data generator with the Acme scenario
 services/mock_sources   stand-in CRM and helpdesk APIs for live rechecks
 db/init.sql         database schemas

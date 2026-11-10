@@ -12,3 +12,5 @@ DockerDesktopWSL
 .ruff_cache
 data/synthetic/out
 uv.toml
+data/dbt/target
+data/dbt/logs

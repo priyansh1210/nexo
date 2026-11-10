@@ -1,0 +1,68 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: crm_accounts
+      - name: crm_contacts
+      - name: product_events
+      - name: support_tickets
+      - name: billing_invoices
+      - name: documents
+
+models:
+  - name: stg_accounts
+    columns:
+      - name: account_id
+        data_tests: [unique, not_null]
+      - name: renewal_date
+        data_tests: [not_null]
+  - name: stg_contacts
+    columns:
+      - name: contact_id
+        data_tests: [unique, not_null]
+      - name: account_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+  - name: stg_events
+    columns:
+      - name: event_id
+        data_tests: [unique, not_null]
+      - name: occurred_at
+        data_tests: [not_null]
+      - name: event_name
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [login, feature_used, onboarding_step]
+  - name: stg_tickets
+    columns:
+      - name: ticket_id
+        data_tests: [unique, not_null]
+      - name: severity
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [low, normal, high, urgent]
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [open, pending, solved]
+  - name: stg_invoices
+    columns:
+      - name: invoice_id
+        data_tests: [unique, not_null]
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [paid, open, overdue]
+  - name: stg_documents
+    columns:
+      - name: doc_id
+        data_tests: [unique, not_null]

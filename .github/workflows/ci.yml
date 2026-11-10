@@ -37,3 +37,8 @@ jobs:
       - run: docker compose up --build --wait
       - run: curl -fsS http://localhost:8000/health | grep '"db":true'
       - run: curl -fsS http://localhost:3000/ | grep Nexo
+      # The seeded story must come out of the warehouse: exactly three at-risk renewals next month.
+      - run: >
+          docker compose exec -T postgres psql -U nexo -d nexo -Atc
+          "select count(*) from marts.renewals_upcoming where renews_next_month and is_at_risk"
+          | grep -x 3

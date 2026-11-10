@@ -1,0 +1,74 @@
+version: 2
+
+models:
+  - name: identity_map
+    columns:
+      - name: account_id
+        data_tests: [unique, not_null]
+  - name: dim_account
+    columns:
+      - name: account_id
+        data_tests: [unique, not_null]
+  - name: dim_contact
+    columns:
+      - name: contact_id
+        data_tests: [unique, not_null]
+  - name: fct_usage_trend
+    columns:
+      - name: account_id
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_account')
+                field: account_id
+  - name: fct_tickets
+    columns:
+      - name: ticket_id
+        data_tests: [unique, not_null]
+  - name: fct_onboarding
+    columns:
+      - name: account_id
+        data_tests: [unique, not_null]
+  - name: account_health
+    columns:
+      - name: account_id
+        data_tests: [unique, not_null]
+      - name: usage_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [ok, no_linked_workspace, no_recent_usage, no_baseline]
+
+unit_tests:
+  # The windows are checked on their edge days: 31 Jan is the first day of the last 30,
+  # 30 Jan the final day of the prior 30, 1 Jan its first day, and 31 Dec falls outside both.
+  - name: usage_change_compares_the_last_30_days_with_the_30_before
+    model: fct_usage_trend
+    given:
+      - input: ref('identity_map')
+        rows:
+          - {account_id: a1, workspace_id: w1}
+      - input: ref('int_usage_daily')
+        rows:
+          - {workspace_id: w1, day: 2026-03-01, feature: reports, events: 20}
+          - {workspace_id: w1, day: 2026-01-31, feature: reports, events: 40}
+          - {workspace_id: w1, day: 2026-01-30, feature: reports, events: 70}
+          - {workspace_id: w1, day: 2026-01-01, feature: login, events: 30}
+          - {workspace_id: w1, day: 2025-12-31, feature: login, events: 999}
+      - input: ref('stg_events')
+        rows:
+          - {workspace_id: w1, user_id: u1, event_name: login, day: 2026-03-01}
+          - {workspace_id: w1, user_id: u1, event_name: login, day: 2026-01-15}
+          - {workspace_id: w1, user_id: u2, event_name: feature_used, day: 2026-01-15}
+          - {workspace_id: w1, user_id: u3, event_name: onboarding_step, day: 2026-01-15}
+    expect:
+      rows:
+        - account_id: a1
+          as_of_day: 2026-03-01
+          events_last_30d: 60
+          events_prior_30d: 100
+          usage_change: "-0.4000"
+          active_users_last_30d: 1
+          active_users_prior_30d: 2

@@ -3,6 +3,10 @@ x-py: &py
   image: nexo-py
   environment:
     DATABASE_URL: postgresql://nexo:nexo@postgres:5432/nexo
+    NEXO_DATA_DIR: /demo-data
+    MOCK_SOURCES_URL: http://mock-sources:8001
+  volumes:
+    - demo-data:/demo-data
   depends_on:
     postgres:
       condition: service_healthy
@@ -34,6 +38,7 @@ services:
       timeout: 3s
       retries: 20
 
+  # The fake source systems. On first start it writes the synthetic source files to demo-data.
   mock-sources:
     <<: *py
     pull_policy: never # built by api
@@ -45,11 +50,28 @@ services:
       timeout: 3s
       retries: 20
 
+  # Runs once at startup so the warehouse is loaded before anything reads it. Dagster then
+  # repeats the same run every hour.
+  pipeline:
+    <<: *py
+    pull_policy: never # built by api
+    command: python -m data.pipelines.cli run
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-sources:
+        condition: service_healthy
+
+  # shortcut: no DAGSTER_HOME, so Dagster's own run history resets on restart (sync history is kept in
+  # meta.sync_runs); mount a volume for it when that history matters.
   dagster:
     <<: *py
     pull_policy: never # built by api
     command: dagster dev -h 0.0.0.0 -p 3001 -m data.pipelines.definitions
     ports: ["3001:3001"]
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:3001/server_info')"]
       interval: 5s
@@ -72,3 +94,4 @@ services:
 
 volumes:
   pgdata:
+  demo-data:

@@ -1,0 +1,11 @@
+version: 2
+
+# Keeps every past version of an account: who owned it, its plan, seats, value and renewal date.
+snapshots:
+  - name: accounts_history
+    relation: ref('stg_accounts')
+    config:
+      schema: snapshots
+      unique_key: account_id
+      strategy: check
+      check_cols: [owner_name, owner_email, plan, seats, arr_usd, renewal_date]

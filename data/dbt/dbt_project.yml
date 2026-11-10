@@ -1,0 +1,20 @@
+name: nexo
+version: "1.0"
+profile: nexo
+
+models:
+  nexo:
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table
+
+# The risk criteria. An account is at risk when any one of them holds.
+vars:
+  risk_usage_drop: -0.20 # 30-day usage change at or below this
+  risk_ticket_age_days: 14 # an open high or urgent ticket older than this
+
+flags:
+  send_anonymous_usage_stats: false

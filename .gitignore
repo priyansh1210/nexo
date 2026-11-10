@@ -16,3 +16,8 @@ DockerDesktopWSL/
 # Generated synthetic data
 data/synthetic/out/
 uv.toml
+
+# dbt build output
+data/dbt/target/
+data/dbt/logs/
+data/dbt/.user.yml
