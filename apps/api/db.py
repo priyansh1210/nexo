@@ -6,9 +6,10 @@ from typing import Annotated
 import psycopg
 from alembic import command
 from alembic.config import Config
-from fastapi import Depends
+from fastapi import Depends, Request
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 
 def migrate() -> None:
@@ -22,12 +23,24 @@ def connect() -> psycopg.Connection:
     return psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row)
 
 
-def get_db() -> Iterator[psycopg.Connection]:
+def open_pool() -> ConnectionPool:
+    """The API's connections, opened once at startup and lent to one request at a time."""
+    # A request holds its connection until it returns, a chat turn and its model calls included,
+    # so this many requests run at once; the next wait up to 30 seconds, then get a 503 (main.py).
+    # Postgres allows 100 connections by default, shared with the checkpointer, Dagster and dbt.
+    return ConnectionPool(
+        os.environ["DATABASE_URL"],
+        kwargs={"row_factory": dict_row},
+        min_size=2,
+        max_size=40,
+        check=ConnectionPool.check_connection,  # a connection broken by a Postgres restart is replaced
+    )
+
+
+def get_db(request: Request) -> Iterator[psycopg.Connection]:
     # One transaction per request: it commits when the route returns and rolls back when it raises,
     # so a write and its audit row always land together.
-    # shortcut: a new connection per request, fine for a team-sized deployment; switch to
-    # psycopg_pool when request volume makes connection setup show up.
-    with connect() as conn:
+    with request.app.state.pool.connection() as conn:
         yield conn
 
 

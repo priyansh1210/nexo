@@ -10,7 +10,7 @@ import csv
 import hashlib
 import io
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -19,6 +19,9 @@ from typing import Protocol
 class Batch:
     records: list[dict]
     cursor: str | None  # where to resume next time; saved only after the records have landed
+    # Records that could not be read, as {"record": the raw text, "error": why}. They go to
+    # meta.dead_letters in the same transaction, so one bad line never stops a source.
+    rejected: list[dict] = field(default_factory=list)
 
 
 class Connector(Protocol):
@@ -47,7 +50,7 @@ class FileSnapshot:
 
 
 class EventLog:
-    """An append-only JSONL event log. The cursor is the number of lines already read."""
+    """An append-only JSONL event log. The cursor is the byte offset already read."""
 
     source = "product_events"
     streams = ("product_events",)
@@ -57,19 +60,30 @@ class EventLog:
         self.path = path
 
     def read(self, stream: str, cursor: str | None) -> Batch:
-        start = int(cursor or 0)
-        # shortcut: reads the whole file to skip old lines, fine for a demo log; keep a byte offset
-        # when logs reach gigabytes.
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        records = []
-        for number, line in enumerate(lines[start:], start + 1):
-            record = json.loads(line)
-            if missing := self.required - record.keys():
-                # shortcut: one bad line stops this source so nothing is silently dropped; add a
-                # dead-letter table when real event sources are connected.
-                raise ValueError(f"{self.path.name} line {number} is missing {sorted(missing)}")
-            records.append(record)
-        return Batch(records, str(len(lines)))
+        with self.path.open("rb") as log:
+            if not cursor:
+                start = 0
+            elif cursor.startswith("byte:"):
+                start = int(cursor.removeprefix("byte:"))
+            else:  # an older cursor counted lines
+                start = sum(len(line) for _, line in zip(range(int(cursor)), log))
+            log.seek(start)
+            new = log.read()
+        end = new.rfind(b"\n") + 1  # a line still being written is left for the next read
+        records, rejected = [], []
+        for raw in new[:end].splitlines():
+            if not raw.strip():
+                continue
+            try:
+                record = json.loads(raw.decode("utf-8"))
+                if not isinstance(record, dict):
+                    raise TypeError("not a JSON object")
+                if missing := self.required - record.keys():
+                    raise ValueError(f"missing {sorted(missing)}")
+                records.append(record)
+            except (ValueError, TypeError) as error:  # bad JSON and bad UTF-8 are ValueErrors too
+                rejected.append({"record": raw.decode("utf-8", "replace"), "error": str(error)})
+        return Batch(records, f"byte:{start + end}", rejected)
 
 
 class HelpdeskApi:

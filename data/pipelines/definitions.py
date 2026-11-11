@@ -27,6 +27,7 @@ def warehouse(context: AssetExecutionContext) -> None:
 
 refresh_job = define_asset_job("refresh", selection=[warehouse])
 
+
 defs = Definitions(
     assets=[warehouse],
     jobs=[refresh_job],

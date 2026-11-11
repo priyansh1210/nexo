@@ -14,6 +14,14 @@ x-py: &py
     NEXO_OPENAI_BASE_URL: ${NEXO_OPENAI_BASE_URL:-}
     NEXO_OPENAI_MODEL: ${NEXO_OPENAI_MODEL:-}
     NEXO_OPENAI_API_KEY: ${NEXO_OPENAI_API_KEY:-}
+    # Email delivery (README, "Actions"): without a host, approved emails are only logged.
+    NEXO_SMTP_HOST: ${NEXO_SMTP_HOST:-}
+    NEXO_SMTP_PORT: ${NEXO_SMTP_PORT:-}
+    NEXO_SMTP_USER: ${NEXO_SMTP_USER:-}
+    NEXO_SMTP_PASSWORD: ${NEXO_SMTP_PASSWORD:-}
+    NEXO_SMTP_FROM: ${NEXO_SMTP_FROM:-}
+    NEXO_SMTP_STARTTLS: ${NEXO_SMTP_STARTTLS:-1}
+    DAGSTER_HOME: /dagster-home # Dagster's run history, kept on a volume across restarts
   volumes:
     - demo-data:/demo-data
   depends_on:
@@ -72,13 +80,23 @@ services:
       mock-sources:
         condition: service_healthy
 
-  # shortcut: no DAGSTER_HOME, so Dagster's own run history resets on restart (sync history is kept in
-  # meta.sync_runs); mount a volume for it when that history matters.
+  # Delivers approved emails (apps/api/outbox.py); without NEXO_SMTP_HOST it only logs them.
+  outbox:
+    <<: *py
+    pull_policy: never # built by api
+    command: python -m apps.api.outbox
+    depends_on:
+      api:
+        condition: service_healthy # the API applies the migrations that create the outbox
+
   dagster:
     <<: *py
     pull_policy: never # built by api
     command: dagster dev -h 0.0.0.0 -p 3001 -m data.pipelines.definitions
     ports: ["3001:3001"]
+    volumes:
+      - demo-data:/demo-data
+      - dagster-home:/dagster-home
     depends_on:
       pipeline:
         condition: service_completed_successfully
@@ -105,3 +123,4 @@ services:
 volumes:
   pgdata:
   demo-data:
+  dagster-home:

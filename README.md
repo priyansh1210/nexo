@@ -135,7 +135,14 @@ curl -b cookies.txt -H 'Content-Type: application/json' -d '{"decision": "approv
 
 Every step is a row in the audit log (`action.proposed`, `approved`, `executed`, `verified`,
 `refused`, `blocked`, `rejected`). `GET /actions?status=pending` lists the proposals waiting on you.
-Approved emails land in the `app.outbox` table; nothing delivers mail yet.
+
+An approved email is queued in `app.outbox`, and the `outbox` service sends what is queued every
+30 seconds. Set
+`NEXO_SMTP_HOST` (and `NEXO_SMTP_PORT`, `NEXO_SMTP_USER`, `NEXO_SMTP_PASSWORD`, `NEXO_SMTP_FROM`;
+STARTTLS is on unless `NEXO_SMTP_STARTTLS=0`) in your shell or `.env` to deliver them. Without a
+host nothing is delivered: each email is written to the service's log (`docker compose logs
+outbox`) and marked `logged`. Replies go to the CSM who approved the email. A failed send is
+retried for 5 rounds, then marked `failed`.
 
 The default model is a rule-based mock that needs no key. To change it, set these in your shell or
 in a `.env` file next to `docker-compose.yml`, then run `make demo` again:

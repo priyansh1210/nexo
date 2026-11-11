@@ -153,8 +153,8 @@ def execute(db: psycopg.Connection, user: dict, row: dict, params: dict) -> dict
             "values (%s, %s, %s, %s, %s) returning email_id",
             (row["proposal_id"], account_id, params["to_email"], params["subject"], params["body"]),
         ).fetchone()["email_id"]
-        created = {"email_id": email_id}
-        check = ("select 1 from app.outbox where email_id = %s and status = 'sent'", email_id)
+        created = {"email_id": email_id}  # queued; apps/api/outbox.py delivers it within 30 seconds
+        check = ("select 1 from app.outbox where email_id = %s and status = 'queued'", email_id)
     _audit(db, user, row, "executed", created)
     if not db.execute(check[0], (check[1],)).fetchone():  # rolls the whole decision back
         raise RuntimeError(f"Proposal {row['proposal_id']} ran but its result cannot be read back")
@@ -223,7 +223,7 @@ def describe(proposal: dict) -> str:
     """One sentence on how a decision ended, for the conversation's history."""
     what, status = proposal["action"].split("_")[-1], proposal["status"]
     if status == "done":
-        return f"The {what} was approved and done."
+        return f"The {what} was approved and " + ("queued to send." if what == "email" else "done.")
     detail = proposal["outcome"].get("reason") or " ".join(proposal["outcome"].get("changes", []))
     return f"The {what} was not done ({status}): {detail}"
 

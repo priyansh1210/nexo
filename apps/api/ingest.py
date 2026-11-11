@@ -231,8 +231,8 @@ def import_crm(
     pushed_by: Pusher,
 ) -> Landed:
     """Import a CRM export. The body is the CSV file itself. One bad row refuses the whole file."""
-    # shortcut: the size is checked after the body is read; cap request size at the reverse proxy
-    # before exposing this to the internet.
+    # Every request body is already capped while it streams in (main.BodyLimit); this is the
+    # smaller limit for a CSV file.
     if len(content) > MAX_CSV_BYTES:
         raise HTTPException(413, f"The file is larger than {MAX_CSV_BYTES // (1024 * 1024)} MB")
     try:

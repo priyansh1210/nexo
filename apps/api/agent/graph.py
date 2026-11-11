@@ -114,6 +114,12 @@ def data_notes(calls: list[dict]) -> list[str]:
                     else "has never been loaded"
                 )
                 notes[source["source"]] = f"{source['label']} {when}. {EFFECTS[source['source']]}"
+            if source.get("rejected_last_day"):
+                notes.setdefault(
+                    f"{source['source']} rejected",
+                    f"{source['label']}: {source['rejected_last_day']} records in the last day could "
+                    "not be read and were set aside, so its totals may be slightly low.",
+                )
         for held in result.get("withheld", []):
             if held["reason"].startswith("the warehouse check"):
                 notes.setdefault(

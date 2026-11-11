@@ -4,10 +4,10 @@ import os
 from contextlib import contextmanager
 from typing import Annotated
 
-import psycopg
 from fastapi import APIRouter, Path, Request
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, StringConstraints
 
 from apps.api import actions
@@ -45,23 +45,30 @@ class Answer(BaseModel):
 def agent_runtime():
     """The compiled graph with its checkpointer, and the model provider. Lives as long as the API."""
     # The checkpointer creates unqualified tables and an index CONCURRENTLY, so it gets its own
-    # autocommit connection whose search path puts its tables in the agent schema.
-    # shortcut: one connection shared by all requests behind the checkpointer's lock; give it a
-    # connection pool when many conversations run at once.
-    with psycopg.connect(
+    # autocommit connections whose search path puts its tables in the agent schema. It takes its
+    # own lock around each (short) read and write; the model calls run outside it. The pool replaces
+    # a connection that a Postgres restart broke, so the API does not need a restart too.
+    settings = {
+        "autocommit": True,
+        "prepare_threshold": 0,
+        "row_factory": dict_row,
+        "options": "-c search_path=agent",
+    }
+    with ConnectionPool(
         os.environ["DATABASE_URL"],
-        autocommit=True,
-        prepare_threshold=0,
-        row_factory=dict_row,
-        options="-c search_path=agent",
-    ) as conn:
-        conn.execute("create schema if not exists agent")
-        conn.execute("select pg_advisory_lock(727275)")  # one process runs its setup at a time
-        try:
-            saver = PostgresSaver(conn)
-            saver.setup()
-        finally:
-            conn.execute("select pg_advisory_unlock(727275)")
+        kwargs=settings,
+        min_size=2,  # setup below holds one connection for its lock while it uses another
+        max_size=4,
+        check=ConnectionPool.check_connection,
+    ) as pool:
+        saver = PostgresSaver(pool)
+        with pool.connection() as conn:
+            conn.execute("create schema if not exists agent")
+            conn.execute("select pg_advisory_lock(727275)")  # one process runs its setup at a time
+            try:
+                saver.setup()
+            finally:
+                conn.execute("select pg_advisory_unlock(727275)")
         yield {
             "graph": graph.build(saver),
             "provider": provider_from_environment([tools.schema(name) for name in tools.TOOLS]),

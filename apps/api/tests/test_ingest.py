@@ -222,3 +222,19 @@ def test_one_pipeline_run_carries_everything_pushed_into_the_warehouse(api):
             "select count(*) from marts.identity_unmatched where key = 'ws_unknown_backend'"
         ).fetchone()
         assert queue == (1,)
+
+
+def test_a_body_over_the_limit_is_refused_before_it_is_read_whole(api):
+    from apps.api.main import MAX_BODY_BYTES
+
+    big = b"x" * (MAX_BODY_BYTES + 1)
+    headers = {"Content-Type": "text/csv"}
+    declared = api.admin.post("/import/crm/accounts", content=big, headers=headers)
+    assert declared.status_code == 413
+
+    def chunks():  # sent in pieces with no declared length, so the limit must count as it reads
+        for start in range(0, len(big), 1024 * 1024):
+            yield big[start : start + 1024 * 1024]
+
+    streamed = api.admin.post("/import/crm/accounts", content=chunks(), headers=headers)
+    assert streamed.status_code == 413

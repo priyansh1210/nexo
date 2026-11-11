@@ -307,3 +307,37 @@ def test_a_second_run_waits_for_the_one_in_progress(pipeline):
         first_run.execute("select pg_advisory_unlock(%s)", (runner.RUN_LOCK,))
     waiting.join(120)
     assert finished.is_set()
+
+
+def test_a_bad_event_is_set_aside_and_the_rest_still_lands(pipeline):
+    before = row(pipeline, "select count(*) from raw.product_events")[0]
+    good = {
+        "event_id": "evt_after_bad_line",
+        "workspace_id": pipeline.acme_workspace,
+        "user_id": "u_1",
+        "name": "login",
+        "occurred_at": "2026-11-01T09:00:00Z",
+    }
+    with open(pipeline.data_dir / "events.jsonl", "a", encoding="utf-8", newline="\n") as log:
+        log.write("{broken\n")
+    append_events(pipeline, good)
+
+    synced, _ = run(pipeline)
+    assert synced["product_events"] == 1
+    assert row(pipeline, "select count(*) from raw.product_events")[0] == before + 1
+    assert row(pipeline, "select record from meta.dead_letters") == ("{broken",)
+    assert row(
+        pipeline,
+        "select rejected_last_day from meta.source_freshness where source = 'product_events'",
+    ) == (1,)
+
+
+def test_only_new_or_changed_documents_are_embedded(pipeline):
+    from data.embeddings import embed_documents
+
+    assert embed_documents(pipeline.conn) == 0  # the last build embedded every document already
+    pipeline.conn.execute(
+        "update vec.document_chunks set body = 'out of date' "
+        "where doc_id = (select min(doc_id) from vec.document_chunks)"
+    )
+    assert embed_documents(pipeline.conn) == 1

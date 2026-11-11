@@ -70,7 +70,7 @@ def _sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int |
         try:
             # One transaction per source: records, cursor and the run row land together or not at all.
             with conn.transaction():
-                landed = 0
+                landed = rejected = 0
                 for stream in connector.streams:
                     row = conn.execute(
                         "select cursor from meta.cursors where source = %s and stream = %s",
@@ -78,13 +78,20 @@ def _sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int |
                     ).fetchone()
                     batch = connector.read(stream, row[0] if row else None)
                     landed += land(conn, source, stream, batch.records, batch_id)
+                    for bad in batch.rejected:
+                        conn.execute(
+                            "insert into meta.dead_letters (source, stream, batch_id, record, error) "
+                            "values (%s, %s, %s, %s, %s)",
+                            (source, stream, batch_id, bad["record"], bad["error"]),
+                        )
+                    rejected += len(batch.rejected)
                     if batch.cursor is not None:
                         conn.execute(
                             "insert into meta.cursors values (%s, %s, %s) "
                             "on conflict (source, stream) do update set cursor = excluded.cursor",
                             (source, stream, batch.cursor),
                         )
-                record_run(conn, source, batch_id, started, records=landed)
+                record_run(conn, source, batch_id, started, records=landed, rejected=rejected)
             results[source] = landed
         except Exception as error:  # noqa: BLE001 - one failing source must not stop the others
             message = f"{type(error).__name__}: {error}"[:500]

@@ -185,3 +185,19 @@ def test_a_redrafted_action_becomes_one_proposal_not_two(db):
     )
     [draft] = ask(db, provider)["drafts"]
     assert draft["params"]["body"] == "Better wording."
+
+
+def test_records_set_aside_lately_are_disclosed():
+    source = {
+        "source": "product_events",
+        "label": "Usage data",
+        "status": "fresh",
+        "age_hours": 1,
+        "rejected_last_day": 3,
+    }
+    notes = graph.data_notes([{"result": {"sources": [source]}}])
+    expected = (
+        "Usage data: 3 records in the last day could not be read and were set aside, so its "
+        "totals may be slightly low."
+    )
+    assert notes == [expected]

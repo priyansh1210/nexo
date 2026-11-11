@@ -29,6 +29,18 @@ create table if not exists meta.sync_runs (
     finished_at timestamptz not null default clock_timestamp()
 );
 
+-- A record a connector could not read: kept here instead of stopping its source.
+create table if not exists meta.dead_letters (
+    id bigint generated always as identity primary key,
+    source text not null,
+    stream text not null,
+    batch_id uuid not null,
+    record text not null,
+    error text not null,
+    at timestamptz not null default now()
+);
+alter table meta.sync_runs add column if not exists rejected int not null default 0;
+
 -- Results of the latest warehouse build's tests, one row per test.
 create table if not exists meta.check_results (
     model text not null,
@@ -93,5 +105,10 @@ select
     case
         when last_updated is null or last_updated < now() - expected_every * 2 then 'stale'
         else 'fresh'
-    end as status
+    end as status,
+    -- Records that could not be read lately: the source still flows, but its totals may be low.
+    (
+        select count(*) from meta.dead_letters d
+        where d.source = last_sync.source and d.at > now() - interval '1 day'
+    )::int as rejected_last_day
 from last_sync;

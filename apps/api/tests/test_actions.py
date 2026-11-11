@@ -54,7 +54,7 @@ def test_an_email_is_sent_only_after_approval_and_only_once(api, owner):
 
     first, second = decide(owner, pid, "approve").json(), decide(owner, pid, "approve").json()
     assert first["status"] == "done" and second == first  # a double click changes nothing
-    assert query(api, "select status from app.outbox where proposal_id = %s", pid) == [("sent",)]
+    assert query(api, "select status from app.outbox where proposal_id = %s", pid) == [("queued",)]
     assert audit_trail(api, pid) == [
         "action.proposed",
         "action.approved",
@@ -62,7 +62,7 @@ def test_an_email_is_sent_only_after_approval_and_only_once(api, owner):
         "action.verified",
     ]
     history = owner.get("/conversations/email-1").json()
-    assert history[-1]["summary"] == "The email was approved and done."
+    assert history[-1]["summary"] == "The email was approved and queued to send."
     assert history[-2]["summary"] != history[-1]["summary"]  # the double click added nothing
 
 
@@ -183,3 +183,50 @@ def test_no_action_ever_ran_without_an_approval(api, owner):
     assert (
         query(api, "select count(*) from audit.events where action = 'action.executed'")[0][0] > 0
     )
+
+
+def test_approved_emails_are_sent_retried_or_only_logged(api, owner, monkeypatch):
+    from psycopg.rows import dict_row
+
+    from apps.api import outbox
+
+    def approve(conversation: str) -> int:
+        [proposal] = ask(owner, conversation, EMAIL)["proposals"]
+        return decide(owner, proposal["proposal_id"], "approve").json()["outcome"]["email_id"]
+
+    def state(email_id: int) -> tuple:
+        sql = "select status, attempts from app.outbox where email_id = %s"
+        return query(api, sql, email_id)[0]
+
+    with psycopg.connect(api.url, autocommit=True, row_factory=dict_row) as conn:
+        # No mail server set: nothing is delivered, and the email says so.
+        monkeypatch.delenv("NEXO_SMTP_HOST", raising=False)
+        logged = approve("send-1")
+        outbox.send_queued(conn)
+        assert state(logged) == ("logged", 1)
+
+        sent_messages = []
+        sent = approve("send-2")
+        assert outbox.send_queued(conn, deliver=sent_messages.append) == {"sent": 1}
+        assert state(sent) == ("sent", 1)
+        [message] = sent_messages
+        assert message["Reply-To"] == owner.get("/auth/me").json()["email"]
+        assert message["Subject"].startswith("Re: Bulk CSV import")
+
+        def server_down(message):
+            raise ConnectionRefusedError("no server")
+
+        retried = approve("send-3")
+        assert outbox.send_queued(conn, deliver=server_down) == {"retry": 1}
+        assert state(retried) == ("queued", 1)
+        conn.execute("update app.outbox set attempts = %s where email_id = %s", (4, retried))
+        assert outbox.send_queued(conn, deliver=server_down) == {"failed": 1}
+        assert state(retried) == ("failed", 5)
+
+    events = query(
+        api,
+        "select action from audit.events where target_type = 'email' and target_id = %s "
+        "order by event_id",
+        str(retried),
+    )
+    assert events == [("email.retry",), ("email.failed",)]

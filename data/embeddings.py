@@ -63,20 +63,33 @@ def as_vector(values: list[float]) -> str:
     return "[" + ",".join(f"{v:.6f}" for v in values) + "]"
 
 
+COLUMNS = "doc_id, account_id, kind, title, author, created_at, body"
+
+
 def embed_documents(conn: psycopg.Connection) -> int:
-    """Rebuild the search index from the warehouse's documents. Returns how many were indexed."""
-    # shortcut: re-embeds every document on every build and indexes each one whole; fine for
-    # notes and emails, split long documents into passages and embed only changes when they grow.
-    documents = conn.execute(
-        "select doc_id, account_id, kind, title, author, created_at, body from staging.stg_documents"
+    """Bring the search index up to date with the warehouse's documents. Returns how many it embedded.
+
+    Only new and changed documents are embedded; documents gone from the warehouse are removed.
+    """
+    # shortcut: each document is indexed whole, fine for notes and emails; split long documents
+    # into passages when they grow past a few pages.
+    changed = conn.execute(
+        f"select {COLUMNS} from staging.stg_documents d "
+        f"except select {COLUMNS} from vec.document_chunks"
     ).fetchall()
     with conn.transaction():
-        conn.execute("delete from vec.document_chunks")
+        conn.execute(
+            "delete from vec.document_chunks "
+            "where doc_id not in (select doc_id from staging.stg_documents)"
+        )
         with conn.cursor() as cursor:
             cursor.executemany(
-                "insert into vec.document_chunks "
-                "(doc_id, account_id, kind, title, author, created_at, body, embedding) "
-                "values (%s, %s, %s, %s, %s, %s, %s, %s::vector)",
-                [(*doc, as_vector(embed(f"{doc[3]} {doc[6]}"))) for doc in documents],
+                f"insert into vec.document_chunks ({COLUMNS}, embedding) "
+                "values (%s, %s, %s, %s, %s, %s, %s, %s::vector) "
+                "on conflict (doc_id) do update set account_id = excluded.account_id, "
+                "kind = excluded.kind, title = excluded.title, author = excluded.author, "
+                "created_at = excluded.created_at, body = excluded.body, "
+                "embedding = excluded.embedding",
+                [(*doc, as_vector(embed(f"{doc[3]} {doc[6]}"))) for doc in changed],
             )
-    return len(documents)
+    return len(changed)

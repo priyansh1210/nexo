@@ -27,6 +27,7 @@ class Freshness(BaseModel):
     last_updated: datetime | None
     expected_every_seconds: int
     is_stalled: bool
+    rejected_last_day: int  # records that could not be read lately; the totals may be low
 
 
 class Checks(BaseModel):
@@ -218,7 +219,7 @@ TASKS = """
 def data_status(db: psycopg.Connection) -> dict:
     """How far the data behind an answer can be trusted: source freshness and warehouse checks."""
     freshness = db.execute(
-        "select source, status, last_updated, is_stalled, "
+        "select source, status, last_updated, is_stalled, rejected_last_day, "
         "extract(epoch from expected_every)::int as expected_every_seconds "
         "from meta.source_freshness order by source"
     ).fetchall()

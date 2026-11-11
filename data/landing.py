@@ -82,11 +82,12 @@ def record_run(
     started_at: datetime,
     *,
     records: int = 0,
+    rejected: int = 0,
     error: str | None = None,
 ) -> None:
     """One row per delivery attempt. The freshness view reads the successful ones."""
     conn.execute(
-        "insert into meta.sync_runs (source, batch_id, status, records, error, started_at) "
-        "values (%s, %s, %s, %s, %s, %s)",
-        (source, batch_id, "failed" if error else "success", records, error, started_at),
+        "insert into meta.sync_runs (source, batch_id, status, records, rejected, error, started_at) "
+        "values (%s, %s, %s, %s, %s, %s, %s)",
+        (source, batch_id, "failed" if error else "success", records, rejected, error, started_at),
     )

@@ -79,7 +79,7 @@ class Status:
     @classmethod
     def read(cls, db: psycopg.Connection) -> "Status":
         rows = db.execute(
-            "select source, status, last_updated, "
+            "select source, status, last_updated, rejected_last_day, "
             "extract(epoch from now() - last_updated) / 3600 as age_hours from meta.source_freshness"
         ).fetchall()
         failed = db.execute(
@@ -106,6 +106,7 @@ class Status:
                 "status": "stale",
                 "last_updated": None,
                 "age_hours": None,
+                "rejected_last_day": 0,
             }
             described.append(
                 {
@@ -118,6 +119,7 @@ class Status:
                     "age_hours": round(float(state["age_hours"]), 1)
                     if state["age_hours"] is not None
                     else None,
+                    "rejected_last_day": state["rejected_last_day"],
                 }
             )
         return described
