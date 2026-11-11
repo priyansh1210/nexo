@@ -5,6 +5,7 @@ x-py: &py
     DATABASE_URL: postgresql://nexo:nexo@postgres:5432/nexo
     NEXO_DATA_DIR: /demo-data
     MOCK_SOURCES_URL: http://mock-sources:8001
+    NEXO_DEMO_USERS: "1" # seeds the demo sign-ins listed in the README; remove outside a demo
   volumes:
     - demo-data:/demo-data
   depends_on:

@@ -3,8 +3,8 @@
 A self-hostable customer-success assistant: ask a business question, get an investigated answer with
 evidence and data freshness, then approve the follow-up actions, all in one conversation.
 
-Status: Phase 2 (data layer). The stack boots, loads the seeded demo data and builds a tested
-warehouse from it; the API, agent and UI arrive in the next phases.
+Status: Phase 3 (API). The stack loads the seeded demo data, builds a tested warehouse from it and
+serves it through a signed-in API; the agent and UI arrive in the next phases.
 
 ## Quickstart
 
@@ -41,6 +41,28 @@ Writes accounts, contacts, invoices, tickets, documents and about 100,000 produc
 carries the demo story: six accounts renew next month, three are at risk, and Acme Corp's usage fell
 40% after an import problem its admin reported in a ticket that is still open.
 
+## API
+
+Interactive docs are at http://localhost:8000/docs. Sign in first; the session is an HTTP-only cookie.
+
+| Demo sign-in | Role | Can |
+| --- | --- | --- |
+| `viewer@nexo.example` | viewer | read accounts, notes, tasks and data freshness |
+| `maya.okafor@nexo.example` (also `daniel.reyes`, `aiko.tanaka`, `lena.fischer`) | csm | also write notes and tasks, and read the audit log |
+| `admin@nexo.example` | admin | everything |
+
+The password for every demo sign-in is `nexo-demo`. They exist only because the Compose file sets
+`NEXO_DEMO_USERS=1`; remove that line for anything but a demo.
+
+```bash
+curl -c cookies.txt -H 'Content-Type: application/json'   -d '{"email": "maya.okafor@nexo.example", "password": "nexo-demo"}' http://localhost:8000/auth/login
+curl -b cookies.txt http://localhost:8000/accounts/acct_acme
+```
+
+Every response that carries account data also carries `freshness` (each source's last sync and
+whether it is stale) and `checks` (whether the warehouse tests passed). Every write adds a row to
+the append-only audit log in the same transaction.
+
 ## Data pipeline
 
 Every hour (and once at startup) the pipeline lands new records in the append-only `raw` schema,
@@ -70,7 +92,7 @@ Without `make`, run the same thing directly, for example
 ## Layout
 
 ```text
-apps/api            FastAPI service (the agent will live here)
+apps/api            FastAPI service: sign-in and roles, accounts, notes, tasks, audit (the agent will live here)
 apps/web            Next.js app
 data/connectors.py  the connector interface and the three connectors
 data/pipelines      sync runner, pipeline commands, Dagster job

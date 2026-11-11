@@ -1,10 +1,11 @@
-"""End-to-end pipeline tests against a real Postgres in a throwaway container.
+"""End-to-end pipeline tests against a real Postgres.
 
-The tests run in order and share one database: each continues from the state the last one left.
+The tests run in order and share one database, a private copy of the built warehouse: each test
+continues from the state the last one left.
 """
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -12,34 +13,33 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.types.json import Jsonb
-from testcontainers.community.postgres import PostgresContainer
 
 from data.pipelines import runner
-from data.synthetic.generate import ACME, generate, write
+from data.synthetic.generate import ACME
 from services.mock_sources.main import create_app
-
-TODAY = datetime.now(UTC).date()  # the database runs in UTC, so "today" must be the UTC date too
-DATA = generate(seed=7, as_of=TODAY)
-ACME_WORKSPACE = next(a["workspace_id"] for a in DATA["accounts"] if a["account_id"] == ACME)
-IMPORT_TICKET = next(t["ticket_id"] for t in DATA["tickets"] if "import" in t["subject"])
 
 
 @pytest.fixture(scope="module")
-def pipeline(tmp_path_factory):
-    data_dir = tmp_path_factory.mktemp("sources")
-    write(DATA, data_dir)
-    helpdesk = TestClient(create_app(DATA))
-    with (
-        PostgresContainer("pgvector/pgvector:pg16", driver=None) as postgres,
-        pytest.MonkeyPatch.context() as env,
-    ):
-        env.setenv("DATABASE_URL", postgres.get_connection_url())
+def pipeline(warehouse):
+    copy = warehouse.copy("pipeline")
+    data = warehouse.data
+    helpdesk = TestClient(create_app(data))
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("DATABASE_URL", copy.url)
         with runner.connect() as conn:
             yield SimpleNamespace(
                 conn=conn,
-                data_dir=data_dir,
+                data=data,
+                today=warehouse.today,
+                data_dir=copy.data_dir,
                 helpdesk=helpdesk,
-                sources=runner.connectors(data_dir, helpdesk),
+                sources=runner.connectors(copy.data_dir, helpdesk),
+                acme_workspace=next(
+                    a["workspace_id"] for a in data["accounts"] if a["account_id"] == ACME
+                ),
+                import_ticket=next(
+                    t["ticket_id"] for t in data["tickets"] if "import" in t["subject"]
+                ),
             )
 
 
@@ -56,10 +56,10 @@ def append_events(p, *events: dict) -> None:
         log.writelines(json.dumps(event) + "\n" for event in events)
 
 
-def event(event_id: str, day) -> dict:
+def event(p, event_id: str, day) -> dict:
     return {
         "event_id": event_id,
-        "workspace_id": ACME_WORKSPACE,
+        "workspace_id": p.acme_workspace,
         "user_id": "u_test",
         "name": "feature_used",
         "properties": {"feature": "reports"},
@@ -81,18 +81,18 @@ def marts_fingerprint(p) -> dict[str, str]:
     }
 
 
-def test_first_run_loads_every_source_and_every_check_passes(pipeline):
-    synced, built = run(pipeline)
-    assert built
-    assert synced == {
-        "crm": len(DATA["accounts"]) + len(DATA["contacts"]),
-        "product_events": len(DATA["events"]),
-        "support_tickets": len(DATA["tickets"]),
-        "billing": len(DATA["invoices"]),
-        "documents": len(DATA["documents"]),
+def test_first_run_loads_every_source_and_every_check_passes(pipeline, warehouse):
+    data = pipeline.data
+    assert warehouse.first_build
+    assert warehouse.first_sync == {
+        "crm": len(data["accounts"]) + len(data["contacts"]),
+        "product_events": len(data["events"]),
+        "support_tickets": len(data["tickets"]),
+        "billing": len(data["invoices"]),
+        "documents": len(data["documents"]),
     }
     staged = row(pipeline, "select count(*) from staging.stg_events")[0]
-    assert staged == len({e["event_id"] for e in DATA["events"]}) < len(DATA["events"])
+    assert staged == len({e["event_id"] for e in data["events"]}) < len(data["events"])
 
     checks = dict(
         pipeline.conn.execute(
@@ -143,16 +143,16 @@ def test_running_again_changes_nothing(pipeline):
         row(pipeline, "select count(*) from raw.product_events"),
     ) == before
     versions = row(pipeline, "select count(*) from snapshots.accounts_history")[0]
-    assert versions == len(DATA["accounts"])  # no account changed, so no new history rows
+    assert versions == len(pipeline.data["accounts"])  # no account changed, so no new history rows
 
 
 def test_a_duplicate_changes_nothing_and_a_late_event_lands_on_its_own_day(pipeline):
-    late_day = TODAY - timedelta(days=45)  # inside the prior 30-day window
+    late_day = pipeline.today - timedelta(days=45)  # inside the prior 30-day window
     on_late_day = "select coalesce(sum(events), 0) from marts.fct_usage_daily where account_id = %s and day = %s"
     staged_before = row(pipeline, "select count(*) from staging.stg_events")[0]
     day_before = row(pipeline, on_late_day, ACME, late_day)[0]
 
-    append_events(pipeline, DATA["events"][0], event("evt_late", late_day))
+    append_events(pipeline, pipeline.data["events"][0], event(pipeline, "evt_late", late_day))
     synced, built = run(pipeline)
 
     assert built and synced["product_events"] == 2
@@ -165,24 +165,25 @@ def test_a_duplicate_changes_nothing_and_a_late_event_lands_on_its_own_day(pipel
 
 
 def test_a_ticket_solved_at_the_source_reaches_the_warehouse(pipeline):
-    pipeline.helpdesk.patch(f"/helpdesk/tickets/{IMPORT_TICKET}", json={"status": "solved"})
+    ticket = pipeline.import_ticket
+    pipeline.helpdesk.patch(f"/helpdesk/tickets/{ticket}", json={"status": "solved"})
     synced, built = run(pipeline)
     assert built and synced["support_tickets"] == 1
 
-    assert row(
-        pipeline, "select status from marts.fct_tickets where ticket_id = %s", IMPORT_TICKET
-    ) == ("solved",)
+    assert row(pipeline, "select status from marts.fct_tickets where ticket_id = %s", ticket) == (
+        "solved",
+    )
     health = "select risk_stale_ticket, is_at_risk from marts.account_health where account_id = %s"
     assert row(pipeline, health, ACME) == (False, True)  # still at risk: usage is still down
     versions = "select count(*) from raw.support_tickets where payload->>'ticket_id' = %s"
-    assert row(pipeline, versions, IMPORT_TICKET) == (2,)  # raw keeps both versions
+    assert row(pipeline, versions, ticket) == (2,)  # raw keeps both versions
 
 
 def test_replay_rebuilds_the_same_marts(pipeline):
     before = marts_fingerprint(pipeline)
     assert runner.build(pipeline.conn, full_refresh=True)
     assert marts_fingerprint(pipeline) == before
-    days = (TODAY - timedelta(days=50), TODAY - timedelta(days=40))
+    days = (pipeline.today - timedelta(days=50), pipeline.today - timedelta(days=40))
     assert runner.build(pipeline.conn, replay=days)
     assert marts_fingerprint(pipeline) == before
 
@@ -196,7 +197,7 @@ def test_a_stalled_source_reads_stale_and_is_skipped_until_resumed(pipeline):
     assert status == "stale" and timedelta(hours=47.9) < age < timedelta(hours=48.1)
     assert row(pipeline, freshness, "support_tickets")[0] == "fresh"  # other sources are unaffected
 
-    append_events(pipeline, event("evt_during_stall", TODAY - timedelta(days=2)))
+    append_events(pipeline, event(pipeline, "evt_during_stall", pipeline.today - timedelta(days=2)))
     assert runner.sync(pipeline.conn, pipeline.sources)["product_events"] == "stalled"
 
     runner.resume(pipeline.conn, "product_events")
