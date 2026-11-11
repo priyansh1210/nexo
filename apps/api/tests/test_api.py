@@ -1,7 +1,7 @@
-"""Contract tests for the API, against a private copy of the built warehouse."""
+"""Contract tests for the API's sign-in, roles and workspace routes."""
 
+import hashlib
 import re
-from types import SimpleNamespace
 
 import psycopg
 import pytest
@@ -16,41 +16,20 @@ WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 OPEN_WRITES = {("POST", "/auth/login"), ("POST", "/auth/logout")}
 
 
-def signed_in(email: str) -> TestClient:
-    client = TestClient(app)
-    assert (
-        client.post("/auth/login", json={"email": email, "password": DEMO_PASSWORD}).status_code
-        == 200
-    )
-    return client
-
-
-@pytest.fixture(scope="module")
-def api(warehouse):
-    copy = warehouse.copy("api")
-    with pytest.MonkeyPatch.context() as env:
-        env.setenv("DATABASE_URL", copy.url)
-        env.setenv("NEXO_DEMO_USERS", "1")
-        with TestClient(app) as anonymous:  # entering runs startup: schema and demo users
-            yield SimpleNamespace(
-                anonymous=anonymous,
-                viewer=signed_in("viewer@nexo.example"),
-                csm=signed_in(MAYA),
-                url=copy.url,
-                data=warehouse.data,
-            )
+def test_startup_applied_every_migration(api):
+    with psycopg.connect(api.url) as db:
+        assert db.execute("select version_num from app.alembic_version").fetchone() == ("0002",)
 
 
 def test_sign_in_sign_out_and_who_am_i(api):
     wrong = {"email": MAYA, "password": "not-the-password"}
     unknown = {"email": "nobody@nexo.example", "password": DEMO_PASSWORD}
     assert api.anonymous.post("/auth/login", json=wrong).status_code == 401
-    assert api.anonymous.post("/auth/login", json=unknown).json() == {
-        "detail": "Wrong email or password"
-    }
+    refused = api.anonymous.post("/auth/login", json=unknown)
+    assert refused.json() == {"detail": "Wrong email or password"}
     assert api.anonymous.get("/auth/me").status_code == 401
 
-    client = signed_in(MAYA.upper())  # the email is not case sensitive
+    client = api.sign_in(MAYA.upper())  # the email is not case sensitive
     me = client.get("/auth/me").json()
     assert me == {"user_id": me["user_id"], "email": MAYA, "name": "Maya Okafor", "role": "csm"}
 
@@ -58,19 +37,18 @@ def test_sign_in_sign_out_and_who_am_i(api):
     assert client.get("/auth/me").status_code == 401
 
 
-def test_an_expired_session_is_refused(api):
-    client = signed_in("viewer@nexo.example")
+def test_an_expired_session_is_refused_and_tokens_are_stored_only_as_hashes(api):
+    client = api.sign_in("viewer@nexo.example")
     token = client.cookies["nexo_session"]
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    in_database = "select count(*) from app.sessions where token_hash = %s"
     with psycopg.connect(api.url) as db:
-        assert db.execute(
-            "select count(*) from app.sessions where token_hash = %s", (token,)
-        ).fetchone() == (0,)
-        db.execute("update app.sessions set expires_at = now() - interval '1 second'")
+        assert db.execute(in_database, (token,)).fetchone() == (0,)
+        assert db.execute(in_database, (token_hash,)).fetchone() == (1,)
+        db.execute(
+            "update app.sessions set expires_at = now() where token_hash = %s", (token_hash,)
+        )
     assert client.get("/auth/me").status_code == 401
-    api.viewer, api.csm = (
-        signed_in("viewer@nexo.example"),
-        signed_in(MAYA),
-    )  # the update expired theirs too
 
 
 def test_every_write_route_refuses_the_anonymous_and_the_viewer(api):

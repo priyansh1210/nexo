@@ -4,11 +4,18 @@ from pathlib import Path
 from typing import Annotated
 
 import psycopg
+from alembic import command
+from alembic.config import Config
 from fastapi import Depends
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+
+def migrate() -> None:
+    """Bring the application tables up to the newest migration in `migrations/versions`."""
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
+    command.upgrade(config, "head")
 
 
 def connect() -> psycopg.Connection:

@@ -63,6 +63,25 @@ Every response that carries account data also carries `freshness` (each source's
 whether it is stale) and `checks` (whether the warehouse tests passed). Every write adds a row to
 the append-only audit log in the same transaction.
 
+### Pushing data in
+
+Besides the hourly pull, a source system can push records. An admin creates an API key once:
+
+```bash
+curl -b cookies.txt -H 'Content-Type: application/json' -d '{"name": "product backend"}'   http://localhost:8000/api-keys          # the key is shown once; only its hash is stored
+```
+
+| Route | Body |
+| --- | --- |
+| `POST /ingest/events` | `{"events": [...]}`, up to 5,000 product events |
+| `POST /ingest/tickets` | `{"tickets": [...]}`, up to 1,000 support tickets |
+| `POST /import/crm/accounts`, `/import/crm/contacts` | the CRM's CSV export, as `text/csv`, up to 5 MB |
+
+Send the key as `Authorization: Bearer <key>`. Everything is validated before it lands: one bad
+record or CSV row refuses the whole batch, with the reasons, and nothing is stored. Accepted records
+reach the warehouse on the next pipeline run (`make sync` to run it now). Revoke a key with
+`DELETE /api-keys/{key_id}`.
+
 ## Data pipeline
 
 Every hour (and once at startup) the pipeline lands new records in the append-only `raw` schema,

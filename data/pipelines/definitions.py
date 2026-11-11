@@ -31,7 +31,7 @@ defs = Definitions(
     assets=[warehouse],
     jobs=[refresh_job],
     schedules=[
-        # Hourly, matching the expected intervals in runner.EXPECTED_EVERY.
+        # Hourly, matching the expected intervals in data.landing.EXPECTED_EVERY.
         ScheduleDefinition(
             job=refresh_job,
             cron_schedule="0 * * * *",

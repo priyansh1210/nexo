@@ -12,23 +12,12 @@ from pathlib import Path
 import httpx
 import psycopg
 from dbt.cli.main import dbtRunner
-from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
-from psycopg.types.json import Jsonb
 
 from data.connectors import Connector, EventLog, FileSnapshot, HelpdeskApi
+from data.landing import EXPECTED_EVERY, SCHEMA_SQL, land, record_run, register_source
 
 DBT_DIR = Path(__file__).parent.parent / "dbt"
-SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
-
-# How often each source is expected to sync. A source is stale after twice this interval.
-EXPECTED_EVERY = {
-    "crm": "24 hours",
-    "product_events": "1 hour",
-    "support_tickets": "1 hour",
-    "billing": "24 hours",
-    "documents": "24 hours",
-}
 
 
 def connectors(data_dir: Path, helpdesk) -> list[Connector]:
@@ -54,13 +43,7 @@ def sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int | 
     results: dict[str, int | str] = {}
     for connector in sources:
         source = connector.source
-        stalled = conn.execute(
-            "insert into meta.sources (source, expected_every) values (%s, %s::interval) "
-            "on conflict (source) do update set expected_every = excluded.expected_every "
-            "returning stalled_since",
-            (source, EXPECTED_EVERY[source]),
-        ).fetchone()[0]
-        if stalled:
+        if register_source(conn, source):
             results[source] = "stalled"
             continue
 
@@ -70,43 +53,23 @@ def sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int | 
             with conn.transaction():
                 landed = 0
                 for stream in connector.streams:
-                    table = sql.Identifier("raw", stream)
-                    conn.execute(
-                        sql.SQL(
-                            "create table if not exists {} (payload jsonb not null, "
-                            "_source text not null, _batch_id uuid not null, "
-                            "_ingested_at timestamptz not null default now())"
-                        ).format(table)
-                    )
                     row = conn.execute(
                         "select cursor from meta.cursors where source = %s and stream = %s",
                         (source, stream),
                     ).fetchone()
                     batch = connector.read(stream, row[0] if row else None)
-                    copy_sql = sql.SQL("copy {} (payload, _source, _batch_id) from stdin")
-                    with conn.cursor().copy(copy_sql.format(table)) as copy:
-                        for record in batch.records:
-                            copy.write_row((Jsonb(record), source, batch_id))
+                    landed += land(conn, source, stream, batch.records, batch_id)
                     if batch.cursor is not None:
                         conn.execute(
                             "insert into meta.cursors values (%s, %s, %s) "
                             "on conflict (source, stream) do update set cursor = excluded.cursor",
                             (source, stream, batch.cursor),
                         )
-                    landed += len(batch.records)
-                conn.execute(
-                    "insert into meta.sync_runs (source, batch_id, status, records, started_at) "
-                    "values (%s, %s, 'success', %s, %s)",
-                    (source, batch_id, landed, started),
-                )
+                record_run(conn, source, batch_id, started, records=landed)
             results[source] = landed
         except Exception as error:  # noqa: BLE001 - one failing source must not stop the others
             message = f"{type(error).__name__}: {error}"[:500]
-            conn.execute(
-                "insert into meta.sync_runs (source, batch_id, status, error, started_at) "
-                "values (%s, %s, 'failed', %s, %s)",
-                (source, batch_id, message, started),
-            )
+            record_run(conn, source, batch_id, started, error=message)
             results[source] = f"failed: {message}"
     return results
 

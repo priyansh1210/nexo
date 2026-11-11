@@ -36,9 +36,13 @@ models:
         data_tests: [not_null]
       - name: event_name
         data_tests:
+          # A product may send event names the models do not use yet. That is reported as a
+          # warning, not a failure, so it cannot block the build.
           - accepted_values:
               arguments:
                 values: [login, feature_used, onboarding_step]
+              config:
+                severity: warn
   - name: stg_tickets
     columns:
       - name: ticket_id

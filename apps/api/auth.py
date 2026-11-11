@@ -81,6 +81,7 @@ def require(role: str):
 
 Viewer = Annotated[dict, Depends(require("viewer"))]
 Csm = Annotated[dict, Depends(require("csm"))]
+Admin = Annotated[dict, Depends(require("admin"))]
 
 # Hashing this for an unknown email makes a wrong email take as long as a wrong password.
 _NO_SUCH_USER = hash_password(secrets.token_hex(8))
