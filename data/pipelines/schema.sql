@@ -1,6 +1,8 @@
 -- Pipeline bookkeeping. Idempotent: the runner executes this file before every sync.
 create schema if not exists raw;
 create schema if not exists meta;
+create schema if not exists vec;
+create extension if not exists vector;
 
 create table if not exists meta.sources (
     source text primary key,
@@ -36,19 +38,53 @@ create table if not exists meta.check_results (
     checked_at timestamptz not null default now()
 );
 
+-- One row per warehouse build. A source's data reaches the marts only when a build runs after it.
+create table if not exists meta.build_runs (
+    finished_at timestamptz not null default now(),
+    success boolean not null
+);
+
+-- Document passages and their embeddings, for search. Rebuilt after every warehouse build.
+create table if not exists vec.document_chunks (
+    doc_id text primary key,
+    account_id text not null,
+    kind text not null,
+    title text not null,
+    author text not null,
+    created_at timestamptz not null,
+    body text not null,
+    embedding vector(256) not null
+);
+
 -- A view, not a table: a stopped pipeline cannot update a status, but a view is always current.
--- A source is stale once its last successful sync is older than twice its expected interval.
+-- A source is as fresh as the older of its last successful delivery and the last warehouse build,
+-- because the marts hold its data only as of that build. It is stale once that is older than twice
+-- its expected interval.
 create or replace view meta.source_freshness as
-with last_sync as (
+with last_build as (
+    select max(finished_at) as finished_at from meta.build_runs
+),
+
+last_sync as (
     select
         s.source,
         s.expected_every,
         s.stalled_since is not null as is_stalled,
-        least(max(r.finished_at) filter (where r.status = 'success'), s.stalled_since) as last_updated
+        -- least() skips nulls, so a source never delivered or never built is null (stale) here.
+        case
+            when (select finished_at from last_build) is not null
+                and max(r.finished_at) filter (where r.status = 'success') is not null
+                then least(
+                    max(r.finished_at) filter (where r.status = 'success'),
+                    s.stalled_since,
+                    (select finished_at from last_build)
+                )
+        end as last_updated
     from meta.sources s
     left join meta.sync_runs r using (source)
     group by s.source, s.expected_every, s.stalled_since
 )
+
 select
     source,
     last_updated,

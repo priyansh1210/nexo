@@ -40,6 +40,12 @@ models:
           - accepted_values:
               arguments:
                 values: [ok, no_linked_workspace, no_recent_usage, no_baseline]
+  - name: fct_usage_by_feature
+    columns:
+      - name: account_id
+        data_tests: [not_null]
+      - name: feature
+        data_tests: [not_null]
 
 unit_tests:
   # The windows are checked on their edge days: 31 Jan is the first day of the last 30,
@@ -72,3 +78,28 @@ unit_tests:
           usage_change: "-0.4000"
           active_users_last_30d: 1
           active_users_prior_30d: 2
+
+  # Two features on the window edge days. Users are counted distinct across days, not summed.
+  - name: usage_by_feature_counts_events_and_distinct_users_per_window
+    model: fct_usage_by_feature
+    given:
+      - input: ref('identity_map')
+        rows:
+          - {account_id: a1, workspace_id: w1}
+      - input: ref('int_usage_daily')
+        rows:
+          - {workspace_id: w1, day: 2026-03-01, feature: import, events: 3}
+          - {workspace_id: w1, day: 2026-01-31, feature: import, events: 2}
+          - {workspace_id: w1, day: 2026-01-30, feature: import, events: 10}
+          - {workspace_id: w1, day: 2026-01-30, feature: login, events: 4}
+      - input: ref('stg_events')
+        rows:
+          - {workspace_id: w1, user_id: u1, event_name: feature_used, feature: import, day: 2026-03-01}
+          - {workspace_id: w1, user_id: u1, event_name: feature_used, feature: import, day: 2026-01-31}
+          - {workspace_id: w1, user_id: u2, event_name: feature_used, feature: import, day: 2026-01-30}
+          - {workspace_id: w1, user_id: u3, event_name: feature_used, feature: import, day: 2026-01-30}
+          - {workspace_id: w1, user_id: u1, event_name: login, feature: null, day: 2026-01-30}
+    expect:
+      rows:
+        - {account_id: a1, feature: import, as_of_day: 2026-03-01, events_last_30d: 5, events_prior_30d: 10, usage_change: "-0.5000", users_last_30d: 1, users_prior_30d: 2}
+        - {account_id: a1, feature: login, as_of_day: 2026-03-01, events_last_30d: 0, events_prior_30d: 4, usage_change: "-1.0000", users_last_30d: 0, users_prior_30d: 1}

@@ -12,9 +12,9 @@ from pathlib import Path
 import httpx
 import psycopg
 from dbt.cli.main import dbtRunner
-from psycopg.conninfo import conninfo_to_dict
 
 from data.connectors import Connector, EventLog, FileSnapshot, HelpdeskApi
+from data.embeddings import embed_documents
 from data.landing import EXPECTED_EVERY, SCHEMA_SQL, land, record_run, register_source
 
 DBT_DIR = Path(__file__).parent.parent / "dbt"
@@ -77,21 +77,38 @@ def sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int | 
 def build(
     conn: psycopg.Connection, full_refresh: bool = False, replay: tuple[date, date] | None = None
 ) -> bool:
-    """Run dbt (models, snapshots, tests) and record every test result. True when all passed."""
-    info = conninfo_to_dict(os.environ["DATABASE_URL"])
-    for key in ("host", "port", "user", "password", "dbname"):
-        os.environ[f"NEXO_PG_{key.upper()}"] = str(info.get(key) or "")
-    args = ["build", "--quiet", "--project-dir", str(DBT_DIR), "--profiles-dir", str(DBT_DIR)]
-    args += ["--target-path", str(DBT_DIR / "target"), "--log-path", str(DBT_DIR / "logs")]
-    if full_refresh:
-        args.append("--full-refresh")
+    """Run dbt (models, snapshots, then tests) and record every test result. True when all passed.
+
+    Tests run after every model is built, not between them as `dbt build` does. With `dbt build`, a
+    failed check skips everything downstream, and rebuilding a view drops the views that depend on it,
+    so one bad record would take the marts offline. Here a failed check is recorded instead, and the
+    agent's tools withhold the fields that depend on that model.
+    """
+    # dbt connects with the same settings as `conn`, so it builds the database it was given.
+    info = conn.info
+    settings = {
+        "host": info.host,
+        "port": info.port,
+        "user": info.user,
+        "password": info.password,
+        "dbname": info.dbname,
+    }
+    for key, value in settings.items():
+        os.environ[f"NEXO_PG_{key.upper()}"] = str(value or "")
+    common = ["--quiet", "--project-dir", str(DBT_DIR), "--profiles-dir", str(DBT_DIR)]
+    common += ["--target-path", str(DBT_DIR / "target"), "--log-path", str(DBT_DIR / "logs")]
+    run = ["run", *common, *(["--full-refresh"] if full_refresh else [])]
     if replay:
         days = {"replay_from": replay[0].isoformat(), "replay_to": replay[1].isoformat()}
-        args += ["--vars", json.dumps(days)]
+        run += ["--vars", json.dumps(days)]
 
-    outcome = dbtRunner().invoke(args)
-    if outcome.result is None:  # dbt could not even start the build, for example a parse error
-        raise RuntimeError(f"dbt build did not run: {outcome.exception}")
+    outcomes = [
+        dbtRunner().invoke(args) for args in (run, ["snapshot", *common], ["test", *common])
+    ]
+    for outcome in outcomes:
+        if outcome.result is None:  # dbt could not even start, for example a parse error
+            raise RuntimeError(f"dbt did not run: {outcome.exception}")
+    outcome = outcomes[-1]
 
     checks = []
     for result in outcome.result.results:
@@ -106,13 +123,16 @@ def build(
             )
             checks.append((parent.split(".")[-1], node.name, str(result.status), result.failures))
     with conn.transaction():
+        success = all(o.success for o in outcomes)
+        conn.execute("insert into meta.build_runs (success) values (%s)", (success,))
         conn.execute("delete from meta.check_results")
         with conn.cursor() as cursor:
             cursor.executemany(
                 "insert into meta.check_results (model, test, status, failures) values (%s, %s, %s, %s)",
                 checks,
             )
-    return outcome.success
+    embed_documents(conn)
+    return success
 
 
 def failed_sources(synced: dict[str, int | str]) -> list[str]:

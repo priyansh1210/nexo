@@ -109,9 +109,19 @@ def test_malformed_events_are_refused_and_nothing_lands(api):
 def test_pushed_events_land_with_who_pushed_them(api):
     key = new_key(api, "product backend")["key"]
     with_id, without_id = event(api, event_id="evt_pushed"), event(api, user_id="u_pushed_2")
-    batch = {"events": [with_id, with_id, without_id, without_id, event(api, name="page_viewed")]}
+    no_feature = event(api, event_id="evt_no_feature", properties={})
+    batch = {
+        "events": [
+            with_id,
+            with_id,
+            without_id,
+            without_id,
+            event(api, name="page_viewed"),
+            no_feature,
+        ]
+    }
     landed = api.anonymous.post("/ingest/events", json=batch, headers=bearer(key))
-    assert landed.status_code == 202 and landed.json()["landed"] == 5
+    assert landed.status_code == 202 and landed.json()["landed"] == 6
 
     batch_id = landed.json()["batch_id"]
     with psycopg.connect(api.url) as db:
@@ -122,14 +132,14 @@ def test_pushed_events_land_with_who_pushed_them(api):
         run = db.execute(
             "select source, status, records from meta.sync_runs where batch_id = %s", (batch_id,)
         )
-        assert run.fetchone() == ("product_events", "success", 5)
+        assert run.fetchone() == ("product_events", "success", 6)
         audited = db.execute(
             "select actor_id, action, target_id, detail from audit.events "
             "where target_type = 'batch' and target_id = %s",
             (batch_id,),
         ).fetchone()
         assert audited[:3] == (None, "ingest.product_events", batch_id)
-        assert audited[3]["pushed_by"] == "api key product backend" and audited[3]["records"] == 5
+        assert audited[3]["pushed_by"] == "api key product backend" and audited[3]["records"] == 6
 
 
 def test_pushed_tickets_are_validated_before_they_land(api):
@@ -188,7 +198,12 @@ def test_one_pipeline_run_carries_everything_pushed_into_the_warehouse(api):
         assert runner.build(conn)  # the unknown event name must not fail the build
 
     profile = api.viewer.get(f"/accounts/{ACME}").json()
-    assert profile["usage"]["events_prior_30d"] == 1502  # two distinct pushed events, each once
+    assert profile["usage"]["events_prior_30d"] == 1503  # three distinct pushed events, each once
+    # The feature event that named no feature is counted under its own name, not as a login.
+    features = {
+        f["feature"]: f for f in api.viewer.get(f"/accounts/{ACME}/usage").json()["features"]
+    }
+    assert features["feature_used"]["events_prior_30d"] == 1
     assert "tkt_pushed" in [t["ticket_id"] for t in profile["tickets"]]
     assert profile["account"]["stale_high_tickets"] == 2
     assert profile["account"]["owner_name"] == "Daniel Reyes"

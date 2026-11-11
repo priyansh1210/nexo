@@ -1,4 +1,4 @@
-.PHONY: demo down reset test lint synthetic sync replay stall resume
+.PHONY: demo down reset test lint eval synthetic sync replay stall resume
 
 demo:
 	docker compose up --build --wait
@@ -13,6 +13,10 @@ reset:
 test:
 	uv run pytest -q
 	cd apps/web && pnpm lint
+
+# The evaluation scenarios in evals/scenarios.yaml, with the mock model. Needs Docker running.
+eval:
+	uv run pytest evals -q
 
 lint:
 	uv run ruff check .

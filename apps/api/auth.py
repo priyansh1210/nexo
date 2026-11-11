@@ -12,13 +12,17 @@ from typing import Annotated
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from apps.api.db import Db, audit
+from apps.api.db import Db, audit, connect
 
 SESSION_COOKIE = "nexo_session"
 SESSION_DAYS = 7
 ROLES = ("viewer", "csm", "admin")
+# Sign-in rate limit: this many failed attempts for one email within the window blocks further
+# attempts for that email until the oldest one leaves the window.
+MAX_FAILED_LOGINS = 5
+LOGIN_WINDOW_MINUTES = 15
 DEMO_PASSWORD = "nexo-demo"
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -32,8 +36,8 @@ class User(BaseModel):
 
 
 class Login(BaseModel):
-    email: str
-    password: str
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=200)  # bounds the hashing work one request can cause
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -87,19 +91,52 @@ Admin = Annotated[dict, Depends(require("admin"))]
 _NO_SUCH_USER = hash_password(secrets.token_hex(8))
 
 
+def _record_failed_login(email: str) -> None:
+    # Its own connection: the request's transaction is rolled back when the sign-in fails.
+    with connect() as db:
+        db.execute("insert into app.login_attempts (email) values (%s)", (email,))
+        db.execute(
+            "delete from app.login_attempts where at < now() - make_interval(mins => %s)",
+            (LOGIN_WINDOW_MINUTES,),
+        )
+
+
 @router.post("/login")
 def login(credentials: Login, response: Response, db: Db) -> User:
-    # shortcut: no rate limit on sign-in attempts; add one before exposing this beyond a trusted network.
+    email = credentials.email.strip().lower()
+    # Attempts for one email run one at a time, so parallel guesses each see the earlier failures.
+    # The lock is released when this request's transaction ends.
+    db.execute("select pg_advisory_xact_lock(hashtext('login:' || %s))", (email,))
+    # Checked before the password hash, so a blocked attacker cannot make the server hash.
+    # shortcut: limited per email only, because behind the Compose network every request comes from
+    # one address; add a per-client limit once a proxy passes the real client address.
+    retry_after = db.execute(
+        "select ceil(extract(epoch from min(at) + make_interval(mins => %(window)s) - now()))::int "
+        "as seconds "
+        "from app.login_attempts where email = %(email)s "
+        "and at > now() - make_interval(mins => %(window)s) having count(*) >= %(max)s",
+        {"email": email, "window": LOGIN_WINDOW_MINUTES, "max": MAX_FAILED_LOGINS},
+    ).fetchone()
+    if retry_after:
+        seconds = max(retry_after["seconds"], 1)
+        raise HTTPException(
+            429,
+            f"Too many failed sign-ins for this email. Try again in {seconds} seconds.",
+            headers={"Retry-After": str(seconds)},
+        )
+
     user = db.execute(
         "select user_id, email, name, role, password_hash from app.users where email = %s",
-        (credentials.email.strip().lower(),),
+        (email,),
     ).fetchone()
     if (
         not verify_password(credentials.password, user["password_hash"] if user else _NO_SUCH_USER)
         or not user
     ):
+        _record_failed_login(email)
         raise HTTPException(401, "Wrong email or password")
 
+    db.execute("delete from app.login_attempts where email = %s", (email,))
     token = secrets.token_urlsafe(32)
     db.execute(
         "insert into app.sessions (token_hash, user_id, expires_at) "

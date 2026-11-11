@@ -240,3 +240,10 @@ def test_a_failed_check_is_recorded_against_its_model(pipeline):
         "select model from meta.check_results where status = 'fail'"
     ).fetchall()
     assert failed == [("stg_tickets",)]
+    # The failed check is recorded, and nothing downstream was taken offline by it.
+    assert row(
+        pipeline, "select count(*) from marts.renewals_upcoming where renews_next_month"
+    ) == (6,)
+    assert row(pipeline, "select count(*) from marts.fct_tickets where ticket_id = 'tkt_bad'") == (
+        1,
+    )

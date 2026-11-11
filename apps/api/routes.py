@@ -72,6 +72,32 @@ class Usage(BaseModel):
     active_users_prior_30d: int
 
 
+class FeatureUsage(BaseModel):
+    feature: str
+    events_last_30d: int
+    events_prior_30d: int
+    usage_change: float | None  # None when the feature had no use in the prior 30 days
+    users_last_30d: int
+    users_prior_30d: int
+
+
+class DailyUsage(BaseModel):
+    day: date
+    feature: str
+    events: int
+
+
+class UsageByFeature(BaseModel):
+    account_id: str
+    # Anything but "ok" means there is no usage to show, and why; it is never zero usage.
+    usage_status: Literal["ok", "no_linked_workspace", "no_recent_usage", "no_baseline"]
+    as_of_day: date | None
+    features: list[FeatureUsage]
+    daily: list[DailyUsage]  # the 60 days up to as_of_day, for a chart
+    freshness: list[Freshness]
+    checks: Checks
+
+
 class Onboarding(BaseModel):
     kickoff_at: datetime | None
     admin_setup_at: datetime | None
@@ -245,6 +271,34 @@ def get_account(account_id: str, db: Db, user: Viewer) -> AccountProfile:
         contacts=db.execute(
             "select * from marts.dim_contact" + by_account + " order by role", (account_id,)
         ).fetchall(),
+        **data_status(db),
+    )
+
+
+@router.get("/accounts/{account_id}/usage")
+def get_usage_by_feature(account_id: str, db: Db, user: Viewer) -> UsageByFeature:
+    health = db.execute(
+        "select usage_status, usage_as_of from marts.account_health where account_id = %s",
+        (account_id,),
+    ).fetchone()
+    if not health:
+        raise HTTPException(404, f"No account {account_id}")
+    features = db.execute(
+        "select * from marts.fct_usage_by_feature where account_id = %s "
+        "order by events_last_30d desc, feature",
+        (account_id,),
+    ).fetchall()
+    daily = db.execute(
+        "select day, feature, events from marts.fct_usage_daily "
+        "where account_id = %s and day > %s::date - 60 order by day, feature",
+        (account_id, health["usage_as_of"]),
+    ).fetchall()
+    return UsageByFeature(
+        account_id=account_id,
+        usage_status=health["usage_status"],
+        as_of_day=health["usage_as_of"],
+        features=features,
+        daily=daily,
         **data_status(db),
     )
 

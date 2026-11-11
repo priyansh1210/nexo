@@ -5,7 +5,8 @@ import psycopg
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from apps.api import auth, ingest, routes
+from apps.api import auth, ingest, routes, users
+from apps.api.agent import routes as chat
 from apps.api.db import connect, migrate
 from data.landing import SCHEMA_SQL as LANDING_SCHEMA
 
@@ -17,13 +18,17 @@ async def lifespan(app: FastAPI):
         db.execute(LANDING_SCHEMA)  # the ingest routes write to raw and meta
         if os.environ.get("NEXO_DEMO_USERS") == "1":  # never set this outside a demo
             auth.seed_demo_users(db)
-    yield
+    with chat.agent_runtime() as runtime:
+        app.state.agent = runtime
+        yield
 
 
 app = FastAPI(title="Nexo API", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(routes.router)
 app.include_router(ingest.router)
+app.include_router(users.router)
+app.include_router(chat.router)
 
 
 @app.exception_handler(psycopg.errors.UndefinedTable)

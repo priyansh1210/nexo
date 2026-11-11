@@ -14,11 +14,13 @@ from data.synthetic.generate import ACME
 MAYA = "maya.okafor@nexo.example"  # a csm, and Acme's owner
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 OPEN_WRITES = {("POST", "/auth/login"), ("POST", "/auth/logout")}
+# A POST that changes no business data: asking the assistant a question. Viewers may do it.
+VIEWER_POSTS = {("POST", "/conversations/{conversation_id}/messages")}
 
 
 def test_startup_applied_every_migration(api):
     with psycopg.connect(api.url) as db:
-        assert db.execute("select version_num from app.alembic_version").fetchone() == ("0002",)
+        assert db.execute("select version_num from app.alembic_version").fetchone() == ("0003",)
 
 
 def test_sign_in_sign_out_and_who_am_i(api):
@@ -60,7 +62,8 @@ def test_every_write_route_refuses_the_anonymous_and_the_viewer(api):
                 continue
             url = re.sub(r"\{[^}]+\}", "1", path)
             assert api.anonymous.request(method, url, json={}).status_code == 401, (method, path)
-            assert api.viewer.request(method, url, json={}).status_code == 403, (method, path)
+            if (method, path) not in VIEWER_POSTS:
+                assert api.viewer.request(method, url, json={}).status_code == 403, (method, path)
             checked.append((method, path))
     assert len(checked) >= 3
     assert api.anonymous.get("/accounts").status_code == 401  # reads need a sign-in too
