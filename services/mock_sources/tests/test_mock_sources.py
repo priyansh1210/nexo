@@ -23,14 +23,16 @@ def test_a_ticket_change_shows_on_the_next_read_and_in_the_changed_list():
     assert client.get(f"/helpdesk/tickets/{IMPORT_TICKET}").json()["status"] == "open"
     assert len(client.get("/helpdesk/tickets").json()) == len(DATA["tickets"])
     newest = max(t["updated_at"] for t in DATA["tickets"])
-    assert client.get("/helpdesk/tickets", params={"updated_since": newest}).json() == []
+    at_newest = [t["ticket_id"] for t in DATA["tickets"] if t["updated_at"] == newest]
+    since = client.get("/helpdesk/tickets", params={"updated_since": newest}).json()
+    assert [t["ticket_id"] for t in since] == at_newest  # at or after: the same second counts
 
     changed = client.patch(f"/helpdesk/tickets/{IMPORT_TICKET}", json={"status": "solved"})
     assert changed.status_code == 200
     after = client.get(f"/helpdesk/tickets/{IMPORT_TICKET}").json()
     assert after["status"] == "solved" and after["solved_at"]
     since = client.get("/helpdesk/tickets", params={"updated_since": newest}).json()
-    assert [t["ticket_id"] for t in since] == [IMPORT_TICKET]
+    assert {t["ticket_id"] for t in since} == {IMPORT_TICKET, *at_newest}
 
     bad = client.patch(f"/helpdesk/tickets/{IMPORT_TICKET}", json={"status": "deleted"})
     assert bad.status_code == 422

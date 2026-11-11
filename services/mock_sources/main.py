@@ -19,6 +19,11 @@ class TicketChange(BaseModel):
     status: Literal["open", "pending", "solved"]
 
 
+class AccountChange(BaseModel):
+    owner_name: str
+    owner_email: str
+
+
 def load() -> dict[str, list[dict]]:
     """Generate the source data once per data directory, and the same data on every restart."""
     seed, out = int(os.environ.get("NEXO_SEED", "7")), os.environ.get("NEXO_DATA_DIR")
@@ -39,7 +44,7 @@ def load() -> dict[str, list[dict]]:
 def create_app(data: dict[str, list[dict]]) -> FastAPI:
     app = FastAPI(title="Nexo mock sources")
     # shortcut: changes live in memory and reset on restart; persist them when a demo must survive one.
-    accounts = {a["account_id"]: a for a in data["accounts"]}
+    accounts = {a["account_id"]: dict(a) for a in data["accounts"]}
     tickets = {t["ticket_id"]: dict(t) for t in data["tickets"]}
 
     def find(table: dict, key: str) -> dict:
@@ -55,6 +60,13 @@ def create_app(data: dict[str, list[dict]]) -> FastAPI:
     def get_account(account_id: str) -> dict:
         return find(accounts, account_id)
 
+    @app.patch("/crm/accounts/{account_id}")
+    def change_account(account_id: str, change: AccountChange) -> dict:
+        """Simulates the account changing owner in the CRM after the warehouse snapshot."""
+        account = find(accounts, account_id)
+        account.update(change.model_dump())
+        return account
+
     @app.get("/crm/accounts/{account_id}/contacts")
     def get_contacts(account_id: str) -> list[dict]:
         find(accounts, account_id)
@@ -62,8 +74,8 @@ def create_app(data: dict[str, list[dict]]) -> FastAPI:
 
     @app.get("/helpdesk/tickets")
     def list_tickets(updated_since: str = "") -> list[dict]:
-        """Tickets changed after `updated_since`; all of them when it is empty."""
-        return [t for t in tickets.values() if t["updated_at"] > updated_since]
+        """Tickets changed at or after `updated_since`; all of them when it is empty."""
+        return [t for t in tickets.values() if t["updated_at"] >= updated_since]
 
     @app.get("/helpdesk/tickets/{ticket_id}")
     def get_ticket(ticket_id: str) -> dict:

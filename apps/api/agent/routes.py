@@ -10,6 +10,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
 from pydantic import BaseModel, StringConstraints
 
+from apps.api import actions
 from apps.api.agent import graph, tools
 from apps.api.agent.providers import provider_from_environment
 from apps.api.auth import Viewer
@@ -37,6 +38,7 @@ class Answer(BaseModel):
     evidence: dict[str, dict]
     tool_calls: list[dict]
     dropped_claims: list[dict]
+    proposals: list[actions.Proposal]  # actions drafted for the user to approve, edit or reject
 
 
 @contextmanager
@@ -66,23 +68,20 @@ def agent_runtime():
         }
 
 
-def _thread(user: dict, conversation_id: str) -> str:
-    return f"{user['user_id']}:{conversation_id}"
-
-
 @router.post("/conversations/{conversation_id}/messages")
 def send_message(
     conversation_id: ConversationId, message: MessageIn, request: Request, db: Db, user: Viewer
 ) -> Answer:
     runtime = request.app.state.agent
-    thread = _thread(user, conversation_id)
-    return graph.ask(runtime["graph"], db, runtime["provider"], thread, message.message)
+    thread = graph.thread_id(user, conversation_id)
+    answer = graph.ask(runtime["graph"], db, runtime["provider"], thread, message.message)
+    return answer | {"proposals": actions.save(db, user, conversation_id, answer.pop("drafts"))}
 
 
 @router.get("/conversations/{conversation_id}")
 def get_conversation(conversation_id: ConversationId, request: Request, user: Viewer) -> list[dict]:
     """The earlier questions and answer summaries in this conversation; empty when there are none."""
     saved = request.app.state.agent["graph"].get_state(
-        {"configurable": {"thread_id": _thread(user, conversation_id)}}
+        {"configurable": {"thread_id": graph.thread_id(user, conversation_id)}}
     )
     return saved.values.get("history", [])

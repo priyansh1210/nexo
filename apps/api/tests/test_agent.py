@@ -150,3 +150,38 @@ def test_numbers_written_with_thousands_separators_are_read_whole(db):
     )
     answer = ask(db, provider)
     assert answer["dropped_claims"] == [] and len(answer["observations"]) == 1
+
+
+def test_a_badly_formed_answer_is_dropped_not_a_crash():
+    # Only Claude's API enforces the answer's shape; a small local model may send anything.
+    draft = {
+        "summary": ["not text"],
+        "observations": [{"evidence": ["c1"]}, "loose text", {"text": "Fine.", "evidence": None}],
+        "hypotheses": "not a list",
+    }
+    answer, dropped = graph.check(draft, [], "What is going on?")
+    assert answer == {"summary": "", "observations": [], "hypotheses": []}
+    assert [d["reason"] for d in dropped] == ["not a claim", "not a claim", "cites no tool result"]
+
+
+def test_a_draft_that_quotes_a_number_not_in_the_data_is_dropped(db):
+    body = "Usage fell 73% this month."
+    provider = Scripted(
+        [{"name": "draft_note", "args": {"account_id": ACME, "body": body}}],
+        {"summary": "Drafted.", "observations": [], "hypotheses": []},
+    )
+    answer = ask(db, provider)
+    assert answer["drafts"] == []
+    assert answer["dropped_claims"] == [{"text": body, "reason": "numbers not in the data: 73"}]
+
+
+def test_a_redrafted_action_becomes_one_proposal_not_two(db):
+    provider = Scripted(
+        [
+            {"name": "draft_note", "args": {"account_id": ACME, "body": "First try."}},
+            {"name": "draft_note", "args": {"account_id": ACME, "body": "Better wording."}},
+        ],
+        {"summary": "Drafted.", "observations": [], "hypotheses": []},
+    )
+    [draft] = ask(db, provider)["drafts"]
+    assert draft["params"]["body"] == "Better wording."

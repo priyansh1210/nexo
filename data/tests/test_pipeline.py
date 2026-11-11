@@ -286,3 +286,24 @@ def test_the_schema_can_be_created_by_several_services_at_once(pipeline, warehou
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         list(pool.map(create, range(6)))
+
+
+def test_a_second_run_waits_for_the_one_in_progress(pipeline):
+    # Two runs at once would count usage twice; `make sync` during the hourly run must wait.
+    import threading
+
+    finished = threading.Event()
+
+    def second_run():
+        with runner.connect() as conn:
+            runner.sync(conn, pipeline.sources)
+        finished.set()
+
+    with runner.connect() as first_run:
+        first_run.execute("select pg_advisory_lock(%s)", (runner.RUN_LOCK,))
+        waiting = threading.Thread(target=second_run)
+        waiting.start()
+        assert not finished.wait(3)  # still waiting while the first run holds the lock
+        first_run.execute("select pg_advisory_unlock(%s)", (runner.RUN_LOCK,))
+    waiting.join(120)
+    assert finished.is_set()

@@ -73,7 +73,13 @@ class EventLog:
 
 
 class HelpdeskApi:
-    """Tickets from the helpdesk API. The cursor is the latest `updated_at` already seen."""
+    """Tickets from the helpdesk API, changed since the last read.
+
+    Times are whole seconds, so the API is asked from the newest second already seen, inclusive: a
+    ticket changed later in that same second is not missed. The cursor also holds the tickets
+    already landed at that second, which are skipped. (The same ticket changed twice within one
+    second is still read once.)
+    """
 
     source = "support_tickets"
     streams = ("support_tickets",)
@@ -82,7 +88,18 @@ class HelpdeskApi:
         self.client = client  # an httpx.Client pointed at the helpdesk
 
     def read(self, stream: str, cursor: str | None) -> Batch:
-        response = self.client.get("/helpdesk/tickets", params={"updated_since": cursor or ""})
+        # An older cursor is a bare time: its tickets are read once more, then the new form is used.
+        seen = json.loads(cursor) if (cursor or "").startswith("{") else {"at": cursor, "ids": []}
+        response = self.client.get("/helpdesk/tickets", params={"updated_since": seen["at"] or ""})
         response.raise_for_status()
-        tickets = response.json()
-        return Batch(tickets, max((t["updated_at"] for t in tickets), default=cursor))
+        tickets = [
+            t
+            for t in response.json()
+            if not (t["updated_at"] == seen["at"] and t["ticket_id"] in seen["ids"])
+        ]
+        if not tickets:
+            return Batch([], cursor)
+        at = max(t["updated_at"] for t in tickets)
+        ids = {t["ticket_id"] for t in tickets if t["updated_at"] == at}
+        ids |= set(seen["ids"]) if at == seen["at"] else set()
+        return Batch(tickets, json.dumps({"at": at, "ids": sorted(ids)}))

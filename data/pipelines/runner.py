@@ -6,6 +6,7 @@
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -18,6 +19,19 @@ from data.embeddings import embed_documents
 from data.landing import EXPECTED_EVERY, ensure_schema, land, record_run, register_source
 
 DBT_DIR = Path(__file__).parent.parent / "dbt"
+RUN_LOCK = 727277  # held by sync() and build(), so a second run waits for the first
+
+
+@contextmanager
+def one_run_at_a_time(conn: psycopg.Connection):
+    # Two builds at once would each rebuild the same usage days and count them twice, and share
+    # dbt's temporary table names; two syncs would land the same records twice. `make sync` during
+    # the hourly run is enough to cause it.
+    conn.execute("select pg_advisory_lock(%s)", (RUN_LOCK,))
+    try:
+        yield
+    finally:
+        conn.execute("select pg_advisory_unlock(%s)", (RUN_LOCK,))
 
 
 def connectors(data_dir: Path, helpdesk) -> list[Connector]:
@@ -40,6 +54,11 @@ def connect() -> psycopg.Connection:
 def sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int | str]:
     """Land new records from each source. Returns records landed, or the error, per source."""
     ensure_schema(conn)
+    with one_run_at_a_time(conn):
+        return _sync(conn, sources)
+
+
+def _sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int | str]:
     results: dict[str, int | str] = {}
     for connector in sources:
         source = connector.source
@@ -84,6 +103,11 @@ def build(
     so one bad record would take the marts offline. Here a failed check is recorded instead, and the
     agent's tools withhold the fields that depend on that model.
     """
+    with one_run_at_a_time(conn):
+        return _build(conn, full_refresh, replay)
+
+
+def _build(conn: psycopg.Connection, full_refresh: bool, replay: tuple[date, date] | None) -> bool:
     # dbt connects with the same settings as `conn`, so it builds the database it was given.
     info = conn.info
     settings = {

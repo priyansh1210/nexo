@@ -2,9 +2,11 @@
 
 import hashlib
 import re
+from pathlib import Path
 
 import psycopg
 import pytest
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 
 from apps.api.auth import DEMO_PASSWORD
@@ -14,13 +16,14 @@ from data.synthetic.generate import ACME
 MAYA = "maya.okafor@nexo.example"  # a csm, and Acme's owner
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 OPEN_WRITES = {("POST", "/auth/login"), ("POST", "/auth/logout")}
-# A POST that changes no business data: asking the assistant a question. Viewers may do it.
+# Asking the assistant: viewers may. It writes only proposals, and a viewer's are refused at once.
 VIEWER_POSTS = {("POST", "/conversations/{conversation_id}/messages")}
 
 
 def test_startup_applied_every_migration(api):
     with psycopg.connect(api.url) as db:
-        assert db.execute("select version_num from app.alembic_version").fetchone() == ("0003",)
+        newest = ScriptDirectory(Path(__file__).parents[1] / "migrations").get_current_head()
+        assert db.execute("select version_num from app.alembic_version").fetchone() == (newest,)
 
 
 def test_sign_in_sign_out_and_who_am_i(api):

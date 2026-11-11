@@ -12,7 +12,8 @@
   would quietly round a value into an old, narrower column.
   Otherwise both fall back to dbt's own behaviour, which is safe because the run rebuilds the
   dependent views right after.
-  shortcut: a view whose column type changed fails the run; drop that view by hand then.
+  shortcut: a view whose column type changed fails the run, and is dropped by hand; recreate such a
+  view in the macro once model columns change often.
   shortcut: incremental models still swap on --full-refresh (replay), dropping `fct_usage_daily` until
   it is rebuilt; give them the same treatment if replay runs while the API serves traffic.
 #}

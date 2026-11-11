@@ -27,6 +27,8 @@ class MockProvider:
 
     def _next_calls(self, question: str, calls: list[dict]) -> list[dict]:
         q, called = question.lower(), [c["name"] for c in calls]
+        if action := _requested_action(q):
+            return _action_calls(action, question, calls)
         if not calls:
             if any(word in q for word in ("fresh", "stale", "up to date")):
                 return [{"name": "get_freshness", "args": {}}]
@@ -61,6 +63,15 @@ class MockProvider:
 
     def _answer(self, calls: list[dict]) -> dict:
         names = [c["name"] for c in calls]
+        if drafted := next((c for c in calls if c["name"].startswith("draft_")), None):
+            if "error" in drafted["result"]:
+                text = f"I could not draft that: {drafted['result']['error']}"
+            else:
+                what = drafted["name"].removeprefix("draft_")
+                text = (
+                    f"I drafted the {what} for your approval. Nothing happens until you approve it."
+                )
+            return {"summary": text, "observations": [], "hypotheses": []}
         if "list_renewals" in names:
             return _renewals_answer(_call(calls, "list_renewals"))
         if "get_freshness" in names:
@@ -84,6 +95,72 @@ class MockProvider:
             )
             return {"summary": text, "observations": [], "hypotheses": []}
         return _investigation_answer(calls)
+
+
+def _requested_action(q: str) -> str | None:
+    """The action a request asks for, from its wording. Ticket and document text is never read here."""
+    if "email" in q:
+        return "email"
+    if "task" in q or "follow up" in q:
+        return "task"
+    if "note" in q:
+        return "note"
+    return None
+
+
+def _action_calls(action: str, question: str, calls: list[dict]) -> list[dict]:
+    """Find the account, read it and its open tickets, then draft the action once."""
+    if not calls:
+        return [{"name": "find_account", "args": {"name": question}}]
+    called = [c["name"] for c in calls]
+    found = _rows(calls, "find_account")
+    if len(found) != 1 or any(name.startswith("draft_") for name in called):
+        return []
+    account_id = found[0]["account_id"]
+    if called == ["find_account"]:
+        return [
+            {"name": "get_account", "args": {"account_id": account_id}},
+            {"name": "get_tickets", "args": {"account_id": account_id, "open_only": True}},
+        ]
+    account = (_rows(calls, "get_account") or [None])[0]
+    if not account:
+        return []
+    if action == "note":
+        body = question.split(":", 1)[1] if ":" in question else question
+        return [{"name": "draft_note", "args": {"account_id": account_id, "body": body}}]
+    if action == "task":
+        args = {
+            "account_id": account_id,
+            "title": f"Follow up with {account['name']}",
+            "detail": question,
+            "assignee_email": account["owner_email"],
+            "due_on": "",
+        }
+        return [{"name": "draft_task", "args": args}]
+    contacts = account.get("contacts") or []
+    contact = next((c for c in contacts if c["role"] == "admin"), contacts[0] if contacts else None)
+    if not contact:
+        return []
+    words = {w.strip(".,?!").removesuffix("'s") for w in question.lower().split() if len(w) > 3}
+    tickets = _rows(calls, "get_tickets")
+    ticket = next(
+        (t for t in tickets if words & set(t["subject"].lower().split())),
+        tickets[0] if tickets else None,
+    )
+    about = f'your ticket "{ticket["subject"]}"' if ticket else "your account"
+    body = (
+        f"Hi {contact['name'].split()[0]},\n\nThank you for your patience with {about}. We are "
+        f"working on it, and I will update you as soon as we have news.\n\nBest,\n"
+        f"{account['owner_name']}"
+    )
+    args = {
+        "account_id": account_id,
+        "to_email": contact["email"],
+        "subject": f"Re: {ticket['subject']}" if ticket else f"{account['name']}: an update",
+        "body": body,
+        "ticket_id": ticket["ticket_id"] if ticket else "",
+    }
+    return [{"name": "draft_email", "args": args}]
 
 
 def _call(calls: list[dict], name: str) -> dict:
@@ -259,7 +336,7 @@ class ClaudeProvider:
         import anthropic  # only needed when this provider is chosen
 
         self.client = anthropic.Anthropic()
-        self.model = os.environ.get("NEXO_CLAUDE_MODEL", "claude-opus-5-5")
+        self.model = os.environ.get("NEXO_CLAUDE_MODEL") or "claude-opus-5-5"
         submit = {
             "name": "submit_answer",
             "description": "Give your final answer. Call this once, when you are done.",
@@ -340,12 +417,15 @@ class OpenAICompatibleProvider:
         import httpx
 
         key = os.environ.get("NEXO_OPENAI_API_KEY")
+        base_url = os.environ.get("NEXO_OPENAI_BASE_URL")
+        if not (base_url or client):
+            raise ValueError("NEXO_MODEL_PROVIDER=openai needs NEXO_OPENAI_BASE_URL")
         self.client = client or httpx.Client(
-            base_url=os.environ["NEXO_OPENAI_BASE_URL"],
+            base_url=base_url,
             headers={"Authorization": f"Bearer {key}"} if key else {},
             timeout=300,
         )
-        self.model = os.environ.get("NEXO_OPENAI_MODEL", "gpt-4o")
+        self.model = os.environ.get("NEXO_OPENAI_MODEL") or "gpt-4o"
         submit = {
             "name": "submit_answer",
             "description": "Give your final answer. Call this once, when you are done.",

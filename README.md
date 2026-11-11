@@ -48,7 +48,7 @@ Interactive docs are at http://localhost:8000/docs. Sign in first; the session i
 | Demo sign-in | Role | Can |
 | --- | --- | --- |
 | `viewer@nexo.example` | viewer | read accounts, notes, tasks and data freshness |
-| `maya.okafor@nexo.example` (also `daniel.reyes`, `aiko.tanaka`, `lena.fischer`) | csm | also write notes and tasks, and read the audit log |
+| `maya.okafor@nexo.example` (also `daniel.reyes`, `aiko.tanaka`, `lena.fischer`) | csm | also write notes and tasks, approve the assistant's actions, and read the audit log |
 | `admin@nexo.example` | admin | everything, including users and API keys |
 
 The password for every demo sign-in is `nexo-demo`. After 5 wrong passwords for one email, sign-in for that
@@ -112,14 +112,40 @@ Three rules hold whatever the model does, because they are enforced in code:
   `dropped_claims`.
 - Ticket and document text is marked as customer-written, and the tools can only read.
 
-The default model is a rule-based mock that needs no key. To use Claude, set
-`NEXO_MODEL_PROVIDER=claude` and `ANTHROPIC_API_KEY` for the `api` service (model
-`claude-opus-5-5` by default; override with `NEXO_CLAUDE_MODEL`).
+### Actions
 
-Any server with an OpenAI-style chat completions API works too (OpenAI, Azure, vLLM, Ollama, LM
-Studio): set `NEXO_MODEL_PROVIDER=openai`, `NEXO_OPENAI_BASE_URL` (for example
-`http://localhost:11434/v1` for Ollama), `NEXO_OPENAI_MODEL`, and `NEXO_OPENAI_API_KEY` if the
-server needs one.
+The assistant can draft three actions: an email to an account's contact, a task, and a note. It never
+takes them itself. A draft comes back in the answer's `proposals`, and nothing happens until the user
+who asked approves it:
+
+```bash
+curl -b cookies.txt -H 'Content-Type: application/json'   -d '{"message": "Email the Acme admin about the import ticket."}'   http://localhost:8000/conversations/demo/messages
+curl -b cookies.txt -H 'Content-Type: application/json' -d '{"decision": "approve"}'   http://localhost:8000/actions/1/decision
+```
+
+`decision` is `approve`, `reject`, or `edit` with the fields to change in `params` (for example
+`{"decision": "edit", "params": {"body": "..."}}`). On approval Nexo checks, in one transaction:
+
+1. **Permission.** Viewers cannot act; a CSM may email only the contacts of accounts they own.
+2. **Live recheck.** The records the draft was based on are read again from the source system.
+   If the ticket an email is about has changed, the recipient is no longer an active contact, or the
+   source cannot be reached, nothing runs and the reason comes back as status `blocked`.
+3. **Execute and verify.** The action runs once (a second approval returns the first result) and
+   its result is read back.
+
+Every step is a row in the audit log (`action.proposed`, `approved`, `executed`, `verified`,
+`refused`, `blocked`, `rejected`). `GET /actions?status=pending` lists the proposals waiting on you.
+Approved emails land in the `app.outbox` table; nothing delivers mail yet.
+
+The default model is a rule-based mock that needs no key. To change it, set these in your shell or
+in a `.env` file next to `docker-compose.yml`, then run `make demo` again:
+
+- Claude: `NEXO_MODEL_PROVIDER=claude` and `ANTHROPIC_API_KEY` (model `claude-opus-5-5` by default;
+  override with `NEXO_CLAUDE_MODEL`).
+- Any server with an OpenAI-style chat completions API (OpenAI, Azure, vLLM, Ollama, LM Studio):
+  `NEXO_MODEL_PROVIDER=openai`, `NEXO_OPENAI_BASE_URL`, `NEXO_OPENAI_MODEL`, and
+  `NEXO_OPENAI_API_KEY` if the server needs one. A server on your own machine is reached from the
+  stack as `host.docker.internal`, for example `http://host.docker.internal:11434/v1` for Ollama.
 
 ### Evaluations
 

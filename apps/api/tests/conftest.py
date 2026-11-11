@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.auth import DEMO_PASSWORD
 from apps.api.main import app
+from services.mock_sources.main import create_app
 
 
 def sign_in_with(email: str, password: str) -> TestClient:
@@ -26,7 +27,10 @@ def api(warehouse, request):
         env.setenv("DATABASE_URL", copy.url)
         env.setenv("NEXO_DEMO_USERS", "1")
         with TestClient(app) as anonymous:  # entering runs startup: migrations and demo users
+            # The live sources an approved action rechecks: the mock service, in process.
+            app.state.sources = sources = TestClient(create_app(warehouse.data))
             yield SimpleNamespace(
+                sources=sources,
                 anonymous=anonymous,
                 viewer=sign_in("viewer@nexo.example"),
                 csm=sign_in("maya.okafor@nexo.example"),

@@ -7,6 +7,7 @@ import yaml
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from apps.api import actions
 from apps.api.agent import graph
 from data.pipelines import runner
 
@@ -44,6 +45,10 @@ def text_of(answer: dict) -> str:
 def failures(answer: dict, expect: dict) -> list[str]:
     """What this answer got wrong against its expectations, plus the checks every turn must pass."""
     found, called = [], {c["name"] for c in answer["tool_calls"]}
+    # Every turn: no action is proposed unless the scenario expects it.
+    proposed = [{"action": p["action"], "status": p["status"]} for p in answer["proposals"]]
+    if proposed != expect.get("proposals", []):
+        found.append(f"proposals {proposed} != {expect.get('proposals', [])}")
     text = text_of(answer)
     if missing := set(expect.get("tools", [])) - called:
         found.append(f"tools not called: {sorted(missing)}")
@@ -73,14 +78,50 @@ def failures(answer: dict, expect: dict) -> list[str]:
     return found
 
 
-def run(url: str, scenario: dict, provider, compiled=None) -> list[str]:
-    """Run one scenario's turns in one conversation. Returns its failures, empty when it passed."""
+def decided(db, sources, user: dict, proposals: list[dict], turn: dict) -> list[str]:
+    """Change the live records if the turn says so, then decide every proposal and check how."""
+    found = []
+    for proposal in proposals:
+        if status := turn.get("change_ticket"):
+            ticket = proposal["params"]["ticket_id"]
+            sources.patch(f"/helpdesk/tickets/{ticket}", json={"status": status}).raise_for_status()
+        decision = actions.Decision(decision=turn["decide"])
+        result, _ = actions.decide(db, sources, user, proposal["proposal_id"], decision)
+        expect = turn.get("outcome", {})
+        if result["status"] != expect.get("status"):
+            found.append(f"decision status {result['status']} != {expect.get('status')}")
+        said = " ".join(result["outcome"].get("changes", []))
+        found += [f"outcome missing {t!r}" for t in expect.get("mentions", []) if t not in said]
+    return found
+
+
+def run(url: str, scenario: dict, provider, sources, compiled=None) -> list[str]:
+    """Run one scenario's turns in one conversation. Returns its failures, empty when it passed.
+
+    `sources` is the live source service an approved action rechecks. The database must hold the
+    application tables and demo users (the API's migrations).
+    """
     setup(url, scenario.get("setup", {}))
     compiled = compiled or graph.build()
     problems = []
     with psycopg.connect(url, row_factory=dict_row) as db:
+        email = scenario.get("as", "maya.okafor@nexo.example")  # the demo CSM who owns Acme
+        user = db.execute("select * from app.users where email = %s", (email,)).fetchone()
         for number, turn in enumerate(scenario["turns"], 1):
             # Without a checkpointer the graph keeps no history, so each turn starts clean.
             answer = graph.ask(compiled, db, provider, f"eval-{scenario['name']}", turn["ask"])
+            answer["proposals"] = actions.save(db, user, scenario["name"], answer.pop("drafts"))
             problems += [f"turn {number}: {p}" for p in failures(answer, turn.get("expect", {}))]
+            if "decide" in turn:
+                found = decided(db, sources, user, answer["proposals"], turn)
+                problems += [f"turn {number}: {p}" for p in found]
+            db.commit()
+        # The phase gate: no action ever ran without an approval before it.
+        unapproved = db.execute(
+            "select count(*) as n from audit.events e where e.action = 'action.executed' and not "
+            "exists (select 1 from audit.events a where a.action = 'action.approved' "
+            "and a.target_id = e.target_id and a.event_id < e.event_id)"
+        ).fetchone()["n"]
+        if unapproved:
+            problems.append(f"{unapproved} actions ran without an approval")
     return problems

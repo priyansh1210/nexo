@@ -66,8 +66,15 @@ def check(draft: dict, calls: list[dict], question: str) -> tuple[dict, list[dic
     anywhere = _supported(calls, question)
     kept, dropped = {"observations": [], "hypotheses": []}, []
     for kind in ("observations", "hypotheses"):
-        for claim in draft.get(kind) or []:
-            cited = [by_id[i] for i in claim.get("evidence", []) if i in by_id]
+        claims = draft.get(kind)
+        for claim in claims if isinstance(claims, list) else []:
+            # Only Claude's API enforces the answer's shape; other models can send anything.
+            if not (isinstance(claim, dict) and isinstance(claim.get("text"), str)):
+                dropped.append({"text": json.dumps(claim, default=str), "reason": "not a claim"})
+                continue
+            evidence = claim.get("evidence")
+            evidence = evidence if isinstance(evidence, list) else []
+            cited = [by_id[i] for i in evidence if isinstance(i, str) and i in by_id]
             allowed = _supported(cited, question) if kind == "observations" else anywhere
             unsupported = sorted(_numbers(claim["text"]) - allowed)
             if kind == "observations" and not cited:
@@ -81,7 +88,8 @@ def check(draft: dict, calls: list[dict], question: str) -> tuple[dict, list[dic
                 )
             else:
                 kept[kind].append({"text": claim["text"], "evidence": [c["id"] for c in cited]})
-    summary = draft.get("summary") or ""
+    summary = draft.get("summary")
+    summary = summary if isinstance(summary, str) else ""
     if unsupported := sorted(_numbers(summary) - anywhere):
         dropped.append(
             {"text": summary, "reason": f"numbers not in the data: {', '.join(unsupported)}"}
@@ -142,16 +150,41 @@ def investigate(state: Turn, config) -> Turn:
     return {"calls": calls, "transcript": transcript}
 
 
+def drafts(calls: list[dict], question: str) -> tuple[list[dict], list[dict]]:
+    """The actions drafted this turn whose text quotes only numbers in the data, and those dropped.
+
+    A model often drafts, rereads and drafts again: the last draft of an action on an account
+    replaces the earlier ones, so one request never becomes two emails.
+    """
+    latest = {}
+    for call in calls:
+        if draft := call["result"].get("draft"):
+            latest[draft["action"], draft["account_id"]] = draft
+    anywhere, kept, dropped = _supported(calls, question), [], []
+    for draft in latest.values():
+        # The prose only: addresses and ids are not claims about the data.
+        prose = ("subject", "body", "title", "detail")
+        text = " ".join(str(draft["params"][k]) for k in prose if draft["params"].get(k))
+        if unsupported := sorted(_numbers(text) - anywhere):
+            reason = f"numbers not in the data: {', '.join(unsupported)}"
+            dropped.append({"text": text, "reason": reason})
+        else:
+            kept.append(draft)
+    return kept, dropped
+
+
 def finish(state: Turn) -> Turn:
     calls = state.get("calls") or []
     answer, dropped = check(state["draft"], calls, state["question"])
+    actions, dropped_drafts = drafts(calls, state["question"])
     answer |= {
         "data_notes": data_notes(calls),
         "evidence": {
             c["id"]: {"tool": c["name"], **(c["result"].get("evidence") or [{}])[0]} for c in calls
         },
         "tool_calls": [{"id": c["id"], "name": c["name"], "args": c["args"]} for c in calls],
-        "dropped_claims": dropped,
+        "dropped_claims": dropped + dropped_drafts,
+        "drafts": actions,  # saved as proposals by the caller; nothing runs until approved
     }
     history = [
         *(state.get("history") or []),
@@ -170,6 +203,11 @@ def build(checkpointer=None):
     )
     graph.add_edge("finish", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+def thread_id(user: dict, conversation_id: str) -> str:
+    """A conversation's thread in the checkpointer: private to the user who started it."""
+    return f"{user['user_id']}:{conversation_id}"
 
 
 def ask(graph, db, provider, thread_id: str, question: str) -> dict:

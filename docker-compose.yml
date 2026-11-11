@@ -6,6 +6,14 @@ x-py: &py
     NEXO_DATA_DIR: /demo-data
     MOCK_SOURCES_URL: http://mock-sources:8001
     NEXO_DEMO_USERS: "1" # seeds the demo sign-ins listed in the README; remove outside a demo
+    # The assistant's model (README, "Asking the assistant"): the keyless mock unless set in the
+    # shell or in a .env file next to this one.
+    NEXO_MODEL_PROVIDER: ${NEXO_MODEL_PROVIDER:-mock}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    NEXO_CLAUDE_MODEL: ${NEXO_CLAUDE_MODEL:-}
+    NEXO_OPENAI_BASE_URL: ${NEXO_OPENAI_BASE_URL:-}
+    NEXO_OPENAI_MODEL: ${NEXO_OPENAI_MODEL:-}
+    NEXO_OPENAI_API_KEY: ${NEXO_OPENAI_API_KEY:-}
   volumes:
     - demo-data:/demo-data
   depends_on:
@@ -33,6 +41,7 @@ services:
     build: .
     command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000
     ports: ["8000:8000"]
+    extra_hosts: ["host.docker.internal:host-gateway"] # reach a model server on the host, on Linux too
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/health')"]
       interval: 5s

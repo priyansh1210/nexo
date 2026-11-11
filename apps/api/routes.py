@@ -150,6 +150,13 @@ class NoteIn(BaseModel):
     body: Text
 
 
+class EmailIn(BaseModel):
+    to_email: Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=320)]
+    subject: Title
+    body: Text
+    ticket_id: str | None = None  # the ticket the email is about
+
+
 class Task(BaseModel):
     task_id: int
     account_id: str
