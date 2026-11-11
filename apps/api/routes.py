@@ -168,6 +168,10 @@ class Task(BaseModel):
     assignee_name: str | None
     due_on: date | None
     created_by_name: str
+    created_by_email: str
+    # The conversation the task was approved in, when the assistant drafted it. Conversations are
+    # private, so it opens only for the person who created the task.
+    conversation_id: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -182,6 +186,14 @@ class TaskIn(BaseModel):
 class TaskChange(BaseModel):
     status: Literal["open", "done"] | None = None
     assignee_email: str | None = None
+
+
+class CheckResult(BaseModel):
+    model: str
+    test: str
+    status: str  # pass, fail, error or skipped
+    failures: int | None
+    checked_at: datetime
 
 
 class AuditEvent(BaseModel):
@@ -209,10 +221,14 @@ ACCOUNTS = """
 TASKS = """
     select t.task_id, t.account_id, t.title, t.detail, t.status, t.due_on, t.created_at, t.updated_at,
            assignee.email as assignee_email, assignee.name as assignee_name,
-           creator.name as created_by_name
+           creator.name as created_by_name, creator.email as created_by_email,
+           proposal.conversation_id
     from app.tasks t
     join app.users creator on creator.user_id = t.created_by
     left join app.users assignee on assignee.user_id = t.assignee_id
+    left join app.proposals proposal
+        on proposal.action = 'create_task' and proposal.status = 'done'
+        and (proposal.outcome->>'task_id')::bigint = t.task_id
 """
 
 
@@ -410,20 +426,41 @@ def get_freshness(db: Db, user: Viewer) -> list[Freshness]:
     return data_status(db)["freshness"]
 
 
+@router.get("/checks")
+def list_checks(db: Db, user: Viewer) -> list[CheckResult]:
+    """The latest warehouse build's tests, failures first."""
+    return db.execute(
+        "select model, test, status, failures, checked_at from meta.check_results "
+        "order by status in ('fail', 'error') desc, model, test"
+    ).fetchall()
+
+
 @router.get("/audit")
 def list_audit(
     db: Db,
     user: Csm,
     account_id: str | None = None,
     action: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[AuditEvent]:
+    """Newest first. action may end in '.', for every action under it: 'action.' or 'email.'."""
     return db.execute(
         "select e.event_id, e.at, e.action, e.account_id, e.target_type, e.target_id, e.detail, "
         "u.email as actor_email, u.name as actor_name "
         "from audit.events e left join app.users u on u.user_id = e.actor_id "
         "where (%(account_id)s::text is null or e.account_id = %(account_id)s) "
-        "and (%(action)s::text is null or e.action = %(action)s) "
+        "and (%(action)s::text is null or e.action = %(action)s "
+        "or (right(%(action)s, 1) = '.' and starts_with(e.action, %(action)s))) "
+        "and (%(target_type)s::text is null or e.target_type = %(target_type)s) "
+        "and (%(target_id)s::text is null or e.target_id = %(target_id)s) "
         "order by e.event_id desc limit %(limit)s",
-        {"account_id": account_id, "action": action, "limit": limit},
+        {
+            "account_id": account_id,
+            "action": action,
+            "target_type": target_type,
+            "target_id": target_id,
+            "limit": limit,
+        },
     ).fetchall()

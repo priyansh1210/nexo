@@ -1,5 +1,178 @@
 @import "tailwindcss";
 
-body {
-  font-family: system-ui, sans-serif;
+/* Design tokens: see DESIGN.md. Light and dark share the same names. */
+:root {
+  --paper: #f7f5f0;
+  --surface: #ffffff;
+  --ink: #1b1a17;
+  --ink-2: #5c5951;
+  --rule: #e3ded3;
+  --accent: #0f6b66;
+  --accent-ink: #ffffff; /* text on an accent background */
+  --fresh: #2f7d4f;
+  --stale: #8f5b06;
+  --failed: #b3382c;
+  --chart-before: #76b2ad; /* the lighter shade of the accent, for "the 30 days before" (validated) */
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #15171a;
+    --surface: #1d2024;
+    --ink: #eceae4;
+    --ink-2: #a5a29a;
+    --rule: #30343a;
+    --accent: #5fbfb5;
+    --accent-ink: #15171a;
+    --fresh: #6cc48f;
+    --stale: #e3a74a;
+    --failed: #f08476;
+    --chart-before: #2e6b66;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-rule: var(--rule);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-fresh: var(--fresh);
+  --color-stale: var(--stale);
+  --color-failed: var(--failed);
+  --color-chart-before: var(--chart-before);
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+@layer components {
+  /* Section labels: "Observed", "Possible cause", table group names. */
+  .label {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-radius: 6px;
+    padding: 0.4rem 0.85rem;
+    font-size: 14px;
+    font-weight: 500;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .button:hover {
+    border-color: var(--ink-2);
+  }
+  .button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .button-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-ink);
+  }
+  .button-primary:hover {
+    background: color-mix(in srgb, var(--accent) 86%, var(--ink));
+    border-color: transparent;
+  }
+
+  .field {
+    width: 100%;
+    border-radius: 6px;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    padding: 0.45rem 0.65rem;
+    font-size: 14px;
+    color: var(--ink);
+  }
+  .field:hover {
+    border-color: var(--ink-2);
+  }
+  .field::placeholder {
+    color: var(--ink-2);
+  }
+
+  .link {
+    color: var(--accent);
+    text-underline-offset: 3px;
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
+
+  /* Hairline tables: rows separated by rules, numbers aligned. */
+  .table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  .table th {
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    padding: 0 0.75rem 0.5rem 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  .table td {
+    padding: 0.6rem 0.75rem 0.6rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .table .num {
+    text-align: right;
+  }
+}
+
+/* The evidence panel rises into place: it came from the chip that was selected. */
+@keyframes rise {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

@@ -56,3 +56,22 @@ def test_the_event_log_reads_new_whole_lines_and_sets_bad_ones_aside(tmp_path):
 
     # A cursor saved before byte offsets counted lines; it resumes at the same place.
     assert events.read("product_events", "1").rejected == first.rejected + second.rejected
+
+
+def test_a_rotated_event_log_is_read_again_from_the_start(tmp_path):
+    from data.connectors import EventLog
+
+    event = {
+        "workspace_id": "w",
+        "user_id": "u",
+        "name": "login",
+        "occurred_at": "2026-11-11T10:00:00Z",
+    }
+    log = tmp_path / "events.jsonl"
+    log.write_text((json.dumps(event) + "\n") * 3, "utf-8")
+    events = EventLog(log)
+    cursor = events.read("product_events", None).cursor
+
+    log.write_text(json.dumps(event | {"user_id": "after rotation"}) + "\n", "utf-8")  # rotated
+    after = events.read("product_events", cursor)
+    assert [r["user_id"] for r in after.records] == ["after rotation"]  # not silently nothing

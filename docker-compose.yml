@@ -110,6 +110,7 @@ services:
     build: apps/web
     environment:
       API_URL: http://api:8000
+      NEXO_COOKIE_SECURE: ${NEXO_COOKIE_SECURE:-} # set to 1 when Nexo is served over HTTPS
     ports: ["3000:3000"]
     depends_on:
       api:

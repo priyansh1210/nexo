@@ -67,6 +67,8 @@ class EventLog:
                 start = int(cursor.removeprefix("byte:"))
             else:  # an older cursor counted lines
                 start = sum(len(line) for _, line in zip(range(int(cursor)), log))
+            if start > log.seek(0, 2):  # the log was rotated or cut: read it again from the start
+                start = 0  # re-read events are dropped as duplicates by staging
             log.seek(start)
             new = log.read()
         end = new.rfind(b"\n") + 1  # a line still being written is left for the next read

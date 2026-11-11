@@ -65,6 +65,10 @@ def percent(ratio) -> float | None:
     return int(value) if value == int(value) else value
 
 
+def plural(count, word: str) -> str:
+    return word if count == 1 else f"{word}s"
+
+
 def age_words(hours: float) -> str:
     return f"{int(hours // 24)} days" if hours >= 48 else f"{max(int(hours), 1)} hours"
 
@@ -209,15 +213,20 @@ def list_renewals(
         row["unchecked"] = [
             name for flag, name in zip(risks, criteria, strict=True) if flag is None
         ]
+        tickets, invoices = row["stale_high_tickets"], row["overdue_invoices"]
+        change = row["usage_change_pct"]
         row["reasons"] = [
             text
             for flag, text in (
-                (row["risk_usage_drop"], f"usage changed {row['usage_change_pct']}% over 30 days"),
+                (
+                    row["risk_usage_drop"],
+                    f"usage {'fell' if (change or 0) < 0 else 'rose'} {abs(change or 0)}% over 30 days",
+                ),
                 (
                     row["risk_stale_ticket"],
-                    f"{row['stale_high_tickets']} open high-severity ticket(s) older than 14 days",
+                    f"{tickets} open high-severity {plural(tickets, 'ticket')} older than 14 days",
                 ),
-                (row["risk_overdue_invoice"], f"{row['overdue_invoices']} overdue invoice(s)"),
+                (row["risk_overdue_invoice"], f"{invoices} overdue {plural(invoices, 'invoice')}"),
             )
             if flag
         ]

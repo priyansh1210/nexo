@@ -230,3 +230,30 @@ def test_approved_emails_are_sent_retried_or_only_logged(api, owner, monkeypatch
         str(retried),
     )
     assert events == [("email.retry",), ("email.failed",)]
+
+
+def test_the_web_can_trace_an_approval_and_its_task(api, owner):
+    [proposal] = ask(owner, "trace-1", "Create a follow up task for Fenwyck")["proposals"]
+    done = decide(owner, proposal["proposal_id"], "approve").json()
+    trail = owner.get(
+        "/audit", params={"target_type": "proposal", "target_id": proposal["proposal_id"]}
+    ).json()
+    assert [e["action"] for e in trail] == [
+        "action.verified",
+        "action.executed",
+        "action.approved",
+        "action.proposed",
+    ]
+    assert {e["action"] for e in owner.get("/audit", params={"action": "action."}).json()} <= {
+        "action.proposed",
+        "action.approved",
+        "action.executed",
+        "action.verified",
+        "action.refused",
+        "action.blocked",
+        "action.rejected",
+    }
+    [task] = [t for t in owner.get("/tasks").json() if t["task_id"] == done["outcome"]["task_id"]]
+    assert task["conversation_id"] == "trace-1"
+    checks = api.viewer.get("/checks").json()
+    assert checks and {"model", "test", "status"} <= set(checks[0])

@@ -185,8 +185,14 @@ def finish(state: Turn) -> Turn:
     actions, dropped_drafts = drafts(calls, state["question"])
     answer |= {
         "data_notes": data_notes(calls),
+        # Per tool call: where its data came from, and how fresh each source behind it was.
         "evidence": {
-            c["id"]: {"tool": c["name"], **(c["result"].get("evidence") or [{}])[0]} for c in calls
+            c["id"]: {
+                "tool": c["name"],
+                **(c["result"].get("evidence") or [{}])[0],
+                "sources": c["result"].get("sources", []),
+            }
+            for c in calls
         },
         "tool_calls": [{"id": c["id"], "name": c["name"], "args": c["args"]} for c in calls],
         "dropped_claims": dropped + dropped_drafts,

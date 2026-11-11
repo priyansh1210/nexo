@@ -29,8 +29,8 @@ def upgrade() -> None:
         """
     )
     op.execute("create index proposals_by_user on app.proposals (user_id, status)")
-    # shortcut: nothing delivers mail; an outbox row stands for a sent email. Add a sender that
-    # reads 'queued' rows when real delivery is wired up.
+    # Approved emails. Delivery came in 0005 (apps/api/outbox.py); until then a row stood for a
+    # sent email.
     op.execute(
         """
         create table app.outbox (

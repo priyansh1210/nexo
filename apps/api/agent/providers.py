@@ -12,6 +12,7 @@ Whatever a provider writes, the graph checks it afterwards (see graph.py); a pro
 
 import json
 import os
+from datetime import date
 
 STEP_LIMIT_TEXT = "You have used all your tool calls. Call submit_answer now with what you have."
 
@@ -163,6 +164,11 @@ def _action_calls(action: str, question: str, calls: list[dict]) -> list[dict]:
     return [{"name": "draft_email", "args": args}]
 
 
+def _day(iso: str) -> str:
+    """2026-12-14 (or a timestamp) as "14 Dec 2026". Its numbers are the ones in the data."""
+    return date.fromisoformat(iso[:10]).strftime("%d %b %Y").lstrip("0")
+
+
 def _call(calls: list[dict], name: str) -> dict:
     return next(c for c in calls if c["name"] == name)
 
@@ -199,7 +205,7 @@ def _renewals_answer(call: dict) -> dict:
     ]
     observations += [
         {
-            "text": f"{r['name']} renews on {r['renewal_date']}: {'; '.join(r['reasons'])}.",
+            "text": f"{r['name']} renews on {_day(r['renewal_date'])}: {'; '.join(r['reasons'])}.",
             "evidence": evidence,
         }
         for r in at_risk
@@ -250,7 +256,7 @@ def _investigation_answer(calls: list[dict]) -> dict:
         reached = [s for s in onboarding["steps"] if s["reached_on"]]
         last = reached[-1] if reached else None
         after = (
-            f"stopped after {last['step'].replace('_', ' ')} on {last['reached_on']}"
+            f"stopped after {last['step'].replace('_', ' ')} on {_day(last['reached_on'])}"
             if last
             else "has not started"
         )
@@ -268,7 +274,8 @@ def _investigation_answer(calls: list[dict]) -> dict:
     documents = _rows(calls, "search_documents")
     for document in documents[:1]:
         first = document["body"].split(". ")[0].rstrip(".")
-        text = f'{document["title"]} ({document["kind"].replace("_", " ")}, {document["created_at"]}): "{first}."'
+        when = _day(document["created_at"])
+        text = f'{document["title"]} ({document["kind"].replace("_", " ")}, {when}): "{first}."'
         observations.append({"text": text, "evidence": [ids["search_documents"]]})
 
     for feature in declining:
@@ -283,7 +290,8 @@ def _investigation_answer(calls: list[dict]) -> dict:
                     "evidence": [ids["get_usage"], ids["get_tickets"]],
                 }
             )
-            summary.append(f"an open ticket reports a {feature['feature']} problem")
+            article = "an" if feature["feature"][0].lower() in "aeiou" else "a"
+            summary.append(f"an open ticket reports {article} {feature['feature']} problem")
             break
 
     text = (

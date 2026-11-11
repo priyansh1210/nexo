@@ -1,4 +1,4 @@
-.PHONY: demo down reset test lint eval synthetic sync replay stall resume
+.PHONY: demo down reset test lint eval e2e synthetic sync replay stall resume
 
 demo:
 	docker compose up --build --wait
@@ -17,6 +17,11 @@ test:
 # The evaluation scenarios in evals/scenarios.yaml, with the mock model. Needs Docker running.
 eval:
 	uv run pytest evals -q
+
+# The browser tests, against the running stack (make demo first). Chromium is installed once with
+# `cd apps/web && pnpm exec playwright install chromium`.
+e2e:
+	cd apps/web && pnpm exec playwright test
 
 lint:
 	uv run ruff check .

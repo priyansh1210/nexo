@@ -3,8 +3,9 @@
 A self-hostable customer-success assistant: ask a business question, get an investigated answer with
 evidence and data freshness, then approve the follow-up actions, all in one conversation.
 
-Status: Phase 4 (assistant, read side). Ask questions about accounts and get answers with evidence,
-freshness notes and labelled hypotheses. Actions with approval arrive in Phase 5, the UI in Phase 6.
+Status: Phase 6 (web app). Sign in, ask about your accounts, open the evidence behind any statement,
+and approve, edit or reject the emails, tasks and notes the assistant drafts. Open-source readiness
+(Phase 7) is next.
 
 ## Quickstart
 
@@ -21,6 +22,19 @@ docker compose up --build --wait   # or: make demo
 | Dagster | http://localhost:3001 |
 | Mock source systems | http://localhost:8001/health |
 
+Open http://localhost:3000 and sign in as `maya.okafor@nexo.example` with `nexo-demo` (the other
+demo sign-ins are under [API](#api)). Try "Which customers renewing next month need attention?",
+then "Investigate Acme.", then "Email Acme's admin about the import ticket.", and approve the draft.
+
+| Screen | What it is for |
+| --- | --- |
+| Chat | Questions and answers; each statement cites its source, and the source panel shows how fresh it is |
+| Accounts | Every account, sortable by renewal, usage, tickets or ARR; filter to at-risk or your own |
+| Account | Facts, usage by feature, tickets, onboarding, contacts, tasks and notes |
+| Tasks | Yours and the team's, with the chat a task was approved in |
+| Audit | Every change, newest first, and the full trail of any approval |
+| Data health | Each source's freshness, records set aside, and every warehouse check |
+
 Stop with `docker compose down` (add `-v` to drop the database volume).
 
 ## Development
@@ -28,7 +42,10 @@ Stop with `docker compose down` (add `-v` to drop the database volume).
 ```bash
 uv sync && uv run pytest -q && uv run ruff check .   # Python; the pipeline tests need Docker running
 cd apps/web && pnpm install && pnpm lint && pnpm build   # Web
+make e2e   # browser tests against the running stack (install Chromium once: see the Makefile)
 ```
+
+The web app's design direction, tokens and component rules are in `apps/web/DESIGN.md`.
 
 ## Synthetic data
 

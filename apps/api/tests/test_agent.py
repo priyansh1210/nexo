@@ -112,6 +112,7 @@ def test_chat_answers_follow_ups_and_keeps_conversations_private(api):
         "/conversations/renewals-1/messages", json={"message": "Investigate Acme."}
     ).json()
     assert second["hypotheses"] and second["evidence"]["c2"]["link"] == f"/accounts/{ACME}"
+    assert {s["source"] for s in second["evidence"]["c2"]["sources"]} >= {"crm"}  # with its age
 
     history = api.csm.get("/conversations/renewals-1").json()
     assert [h["question"] for h in history] == [
