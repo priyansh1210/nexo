@@ -15,7 +15,7 @@ from dbt.cli.main import dbtRunner
 
 from data.connectors import Connector, EventLog, FileSnapshot, HelpdeskApi
 from data.embeddings import embed_documents
-from data.landing import EXPECTED_EVERY, SCHEMA_SQL, land, record_run, register_source
+from data.landing import EXPECTED_EVERY, ensure_schema, land, record_run, register_source
 
 DBT_DIR = Path(__file__).parent.parent / "dbt"
 
@@ -39,7 +39,7 @@ def connect() -> psycopg.Connection:
 
 def sync(conn: psycopg.Connection, sources: list[Connector]) -> dict[str, int | str]:
     """Land new records from each source. Returns records landed, or the error, per source."""
-    conn.execute(SCHEMA_SQL)
+    ensure_schema(conn)
     results: dict[str, int | str] = {}
     for connector in sources:
         source = connector.source

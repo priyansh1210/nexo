@@ -135,6 +135,9 @@ def test_marts_tell_the_seeded_story(pipeline):
 
 
 def test_running_again_changes_nothing(pipeline):
+    # A view's identity in Postgres. If a rebuild dropped it, even briefly, this would change.
+    view_ids = "select relname, oid from pg_class where relname in ('account_health', 'renewals_upcoming', 'fct_tickets') order by 1"
+    views_before = pipeline.conn.execute(view_ids).fetchall()
     before = marts_fingerprint(pipeline), row(pipeline, "select count(*) from raw.product_events")
     synced, built = run(pipeline)
     assert built and set(synced.values()) == {0}
@@ -144,6 +147,22 @@ def test_running_again_changes_nothing(pipeline):
     ) == before
     versions = row(pipeline, "select count(*) from snapshots.accounts_history")[0]
     assert versions == len(pipeline.data["accounts"])  # no account changed, so no new history rows
+    # Views were replaced in place, never dropped, so the API never sees them missing.
+    assert pipeline.conn.execute(view_ids).fetchall() == views_before
+
+
+def test_a_table_whose_column_type_changed_is_rebuilt_not_refilled(pipeline):
+    # Refilling would convert the new values into the old column type, quietly.
+    column_type = (
+        "select data_type from information_schema.columns"
+        " where table_name = 'fct_usage_by_feature' and column_name = 'events_last_30d'"
+    )
+    built_type = row(pipeline, column_type)
+    pipeline.conn.execute(
+        "alter table marts.fct_usage_by_feature alter column events_last_30d type text"
+    )
+    assert run(pipeline)[1]
+    assert row(pipeline, column_type) == built_type
 
 
 def test_a_duplicate_changes_nothing_and_a_late_event_lands_on_its_own_day(pipeline):
@@ -247,3 +266,23 @@ def test_a_failed_check_is_recorded_against_its_model(pipeline):
     assert row(pipeline, "select count(*) from marts.fct_tickets where ticket_id = 'tkt_bad'") == (
         1,
     )
+
+
+def test_the_schema_can_be_created_by_several_services_at_once(pipeline, warehouse):
+    # The API and the pipeline both create it at startup; before the lock, one of them crashed.
+    from concurrent.futures import ThreadPoolExecutor
+
+    import psycopg
+
+    from data.landing import ensure_schema
+
+    copy = warehouse.copy("schema_race")
+    with psycopg.connect(copy.url, autocommit=True) as conn:
+        conn.execute("drop schema meta cascade")
+
+    def create(_):
+        with psycopg.connect(copy.url, autocommit=True) as conn:
+            ensure_schema(conn)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(create, range(6)))

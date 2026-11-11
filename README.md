@@ -116,6 +116,11 @@ The default model is a rule-based mock that needs no key. To use Claude, set
 `NEXO_MODEL_PROVIDER=claude` and `ANTHROPIC_API_KEY` for the `api` service (model
 `claude-opus-5-5` by default; override with `NEXO_CLAUDE_MODEL`).
 
+Any server with an OpenAI-style chat completions API works too (OpenAI, Azure, vLLM, Ollama, LM
+Studio): set `NEXO_MODEL_PROVIDER=openai`, `NEXO_OPENAI_BASE_URL` (for example
+`http://localhost:11434/v1` for Ollama), `NEXO_OPENAI_MODEL`, and `NEXO_OPENAI_API_KEY` if the
+server needs one.
+
 ### Evaluations
 
 `make eval` (or `uv run pytest evals -q`) runs the scenarios in `evals/scenarios.yaml`: the at-risk

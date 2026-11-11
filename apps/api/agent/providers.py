@@ -329,6 +329,97 @@ class ClaudeProvider:
         }
 
 
+class OpenAICompatibleProvider:
+    """Any server that speaks the OpenAI chat completions API: OpenAI, Azure, vLLM, Ollama, LM Studio.
+
+    Set NEXO_OPENAI_BASE_URL (for example http://localhost:11434/v1 for Ollama), NEXO_OPENAI_MODEL,
+    and NEXO_OPENAI_API_KEY when the server needs one.
+    """
+
+    def __init__(self, tool_schemas: list[dict], client=None):
+        import httpx
+
+        key = os.environ.get("NEXO_OPENAI_API_KEY")
+        self.client = client or httpx.Client(
+            base_url=os.environ["NEXO_OPENAI_BASE_URL"],
+            headers={"Authorization": f"Bearer {key}"} if key else {},
+            timeout=300,
+        )
+        self.model = os.environ.get("NEXO_OPENAI_MODEL", "gpt-4o")
+        submit = {
+            "name": "submit_answer",
+            "description": "Give your final answer. Call this once, when you are done.",
+            "input_schema": ANSWER_SCHEMA,
+        }
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in [*tool_schemas, submit]
+        ]
+
+    def step(self, state: dict, must_answer: bool = False) -> dict:
+        transcript = list(state.get("transcript") or [])
+        if not transcript:
+            earlier = "\n".join(
+                f"Earlier question: {h['question']}\nYour answer: {h['summary']}"
+                for h in state.get("history", [])
+            )
+            transcript = [
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": f"{earlier}\n\nQuestion: {state['question']}".strip()},
+            ]
+        else:
+            results = {c["id"]: c["result"] for c in state.get("calls", [])}
+            for call in transcript[-1].get("tool_calls") or []:
+                content = json.dumps(results.get(call["id"]), default=str)
+                transcript.append({"role": "tool", "tool_call_id": call["id"], "content": content})
+            if must_answer:
+                transcript.append({"role": "user", "content": STEP_LIMIT_TEXT})
+
+        response = self.client.post(
+            "/chat/completions",
+            json={"model": self.model, "messages": transcript, "tools": self.tools},
+        )
+        response.raise_for_status()
+        message = response.json()["choices"][0]["message"]
+        transcript.append(message)  # kept as returned, so the next request replays it unchanged
+
+        calls = [
+            {
+                "id": c["id"],
+                "name": c["function"]["name"],
+                "args": _arguments(c["function"]["arguments"]),
+            }
+            for c in message.get("tool_calls") or []
+        ]
+        if submitted := next((c for c in calls if c["name"] == "submit_answer"), None):
+            return {"answer": submitted["args"], "transcript": transcript}
+        if not calls:  # it answered in plain text: keep the text, with no cited claims
+            answer = {
+                "summary": message.get("content") or "No answer.",
+                "observations": [],
+                "hypotheses": [],
+            }
+            return {"answer": answer, "transcript": transcript}
+        return {"calls": calls, "transcript": transcript}
+
+
+def _arguments(raw: str | None) -> dict:
+    """A tool call's arguments. Unreadable ones become an argument no tool takes, so the tool answers
+    with an error the model can correct, instead of the whole turn failing."""
+    try:
+        args = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        args = None
+    return args if isinstance(args, dict) else {"unreadable_arguments": raw}
+
+
 def _text(response) -> str:
     return " ".join(b.text for b in response.content if b.type == "text") or "No answer."
 
@@ -337,6 +428,8 @@ def provider_from_environment(tool_schemas: list[dict]):
     choice = os.environ.get("NEXO_MODEL_PROVIDER", "mock")
     if choice == "claude":
         return ClaudeProvider(tool_schemas)
+    if choice == "openai":
+        return OpenAICompatibleProvider(tool_schemas)
     if choice != "mock":
-        raise ValueError(f"NEXO_MODEL_PROVIDER must be mock or claude, not {choice!r}")
+        raise ValueError(f"NEXO_MODEL_PROVIDER must be mock, claude or openai, not {choice!r}")
     return MockProvider()

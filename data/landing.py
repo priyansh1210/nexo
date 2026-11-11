@@ -26,6 +26,15 @@ EXPECTED_EVERY = {
 }
 
 
+def ensure_schema(conn: psycopg.Connection) -> None:
+    """Create the raw, meta and vec tables if missing. Safe when several services start at once."""
+    # "create ... if not exists" is not safe against itself: two services running it at the same
+    # moment can both decide to create and one fails. The lock makes them take turns.
+    with conn.transaction():
+        conn.execute("select pg_advisory_xact_lock(727276)")
+        conn.execute(SCHEMA_SQL)
+
+
 def register_source(conn: psycopg.Connection, source: str) -> datetime | None:
     """Make sure the source is known to the freshness view. Returns when it was stalled, if it is."""
     return (

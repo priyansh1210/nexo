@@ -8,14 +8,14 @@ from fastapi.responses import JSONResponse
 from apps.api import auth, ingest, routes, users
 from apps.api.agent import routes as chat
 from apps.api.db import connect, migrate
-from data.landing import SCHEMA_SQL as LANDING_SCHEMA
+from data.landing import ensure_schema
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     migrate()
     with connect() as db:
-        db.execute(LANDING_SCHEMA)  # the ingest routes write to raw and meta
+        ensure_schema(db)  # the ingest routes write to raw and meta
         if os.environ.get("NEXO_DEMO_USERS") == "1":  # never set this outside a demo
             auth.seed_demo_users(db)
     with chat.agent_runtime() as runtime:
